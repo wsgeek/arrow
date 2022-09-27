@@ -468,7 +468,7 @@ std::unique_ptr<Node> PrimitiveNode::FromParquet(const void* opaque_element) {
 bool GroupNode::HasRepeatedFields() const {
   for (int i = 0; i < this->field_count(); ++i) {
     auto field = this->field(i);
-    if (field->repetition() == Repetition::REPEATED) {
+    if (field->repetition() == Repetition::REPEATED_1) {
       return true;
     }
     if (field->is_group()) {
@@ -616,13 +616,13 @@ void ToParquet(const GroupNode* schema, std::vector<format::SchemaElement>* out)
 
 static void PrintRepLevel(Repetition::type repetition, std::ostream& stream) {
   switch (repetition) {
-    case Repetition::REQUIRED:
+    case Repetition::REQUIRED_1:
       stream << "required";
       break;
-    case Repetition::OPTIONAL:
+    case Repetition::OPTIONAL_1:
       stream << "optional";
       break;
-    case Repetition::REPEATED:
+    case Repetition::REPEATED_1:
       stream << "repeated";
       break;
     default:

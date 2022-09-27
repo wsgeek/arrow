@@ -72,7 +72,7 @@ namespace arrow {
 namespace {
 
 Repetition::type RepetitionFromNullable(bool is_nullable) {
-  return is_nullable ? Repetition::OPTIONAL : Repetition::REQUIRED;
+  return is_nullable ? Repetition::OPTIONAL_1 : Repetition::REQUIRED_1;
 }
 
 Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
@@ -89,7 +89,7 @@ Status ListToNode(const std::shared_ptr<::arrow::BaseListType>& type,
   RETURN_NOT_OK(FieldToNode(value_name, type->value_field(), properties, arrow_properties,
                             &element));
 
-  NodePtr list = GroupNode::Make("list", Repetition::REPEATED, {element});
+  NodePtr list = GroupNode::Make("list", Repetition::REPEATED_1, {element});
   *out = GroupNode::Make(name, RepetitionFromNullable(nullable), {list},
                          LogicalType::List());
   return Status::OK();
@@ -108,7 +108,7 @@ Status MapToNode(const std::shared_ptr<::arrow::MapType>& type, const std::strin
                             &value_node));
 
   NodePtr key_value =
-      GroupNode::Make("key_value", Repetition::REPEATED, {key_node, value_node});
+      GroupNode::Make("key_value", Repetition::REPEATED_1, {key_node, value_node});
   *out = GroupNode::Make(name, RepetitionFromNullable(nullable), {key_value},
                          LogicalType::Map());
   return Status::OK();
@@ -289,7 +289,7 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
     case ArrowTypeId::NA: {
       type = ParquetType::INT32;
       logical_type = LogicalType::Null();
-      if (repetition != Repetition::OPTIONAL) {
+      if (repetition != Repetition::OPTIONAL_1) {
         return Status::Invalid("NullType Arrow field must be nullable");
       }
     } break;
@@ -1013,7 +1013,7 @@ Status ToParquetSchema(const ::arrow::Schema* arrow_schema,
         FieldToNode(arrow_schema->field(i), properties, arrow_properties, &nodes[i]));
   }
 
-  NodePtr schema = GroupNode::Make("schema", Repetition::REQUIRED, nodes);
+  NodePtr schema = GroupNode::Make("schema", Repetition::REQUIRED_1, nodes);
   *out = std::make_shared<::parquet::SchemaDescriptor>();
   PARQUET_CATCH_NOT_OK((*out)->Init(schema));
 

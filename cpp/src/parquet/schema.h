@@ -105,11 +105,11 @@ class PARQUET_EXPORT Node {
 
   bool is_group() const { return type_ == Node::GROUP; }
 
-  bool is_optional() const { return repetition_ == Repetition::OPTIONAL; }
+  bool is_optional() const { return repetition_ == Repetition::OPTIONAL_1; }
 
-  bool is_repeated() const { return repetition_ == Repetition::REPEATED; }
+  bool is_repeated() const { return repetition_ == Repetition::REPEATED_1; }
 
-  bool is_required() const { return repetition_ == Repetition::REQUIRED; }
+  bool is_required() const { return repetition_ == Repetition::REQUIRED_1; }
 
   virtual bool Equals(const Node* other) const = 0;
 
@@ -329,7 +329,7 @@ class PARQUET_EXPORT GroupNode : public Node {
 
 #define PRIMITIVE_FACTORY(FuncName, TYPE)                                                \
   static inline NodePtr FuncName(const std::string& name,                                \
-                                 Repetition::type repetition = Repetition::OPTIONAL,     \
+                                 Repetition::type repetition = Repetition::OPTIONAL_1,   \
                                  int field_id = -1) {                                    \
     return PrimitiveNode::Make(name, repetition, Type::TYPE, ConvertedType::NONE,        \
                                /*length=*/-1, /*precision=*/-1, /*scale=*/-1, field_id); \
