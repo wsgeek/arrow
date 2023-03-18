@@ -51,6 +51,11 @@
 #include <aws/core/utils/logging/ConsoleLogSystem.h>
 #include <aws/core/utils/stream/PreallocatedStreamBuf.h>
 #include <aws/core/utils/xml/XmlSerializer.h>
+#ifdef ARROW_S3_HAS_CRT
+#include <aws/crt/io/Bootstrap.h>
+#include <aws/crt/io/EventLoopGroup.h>
+#include <aws/crt/io/HostResolver.h>
+#endif
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/AbortMultipartUploadRequest.h>
@@ -85,7 +90,6 @@
 #include "arrow/result.h"
 #include "arrow/status.h"
 #include "arrow/util/async_generator.h"
-#include "arrow/util/atomic_shared_ptr.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/future.h"
 #include "arrow/util/io_util.h"
@@ -98,6 +102,7 @@
 namespace arrow {
 
 using internal::TaskGroup;
+using internal::ToChars;
 using internal::Uri;
 using io::internal::SubmitIO;
 
@@ -121,67 +126,6 @@ using internal::ToAwsString;
 using internal::ToURLEncodedAwsString;
 
 static const char kSep = '/';
-
-namespace {
-
-std::mutex aws_init_lock;
-Aws::SDKOptions aws_options;
-std::atomic<bool> aws_initialized(false);
-
-Status DoInitializeS3(const S3GlobalOptions& options) {
-  Aws::Utils::Logging::LogLevel aws_log_level;
-
-#define LOG_LEVEL_CASE(level_name)                             \
-  case S3LogLevel::level_name:                                 \
-    aws_log_level = Aws::Utils::Logging::LogLevel::level_name; \
-    break;
-
-  switch (options.log_level) {
-    LOG_LEVEL_CASE(Fatal)
-    LOG_LEVEL_CASE(Error)
-    LOG_LEVEL_CASE(Warn)
-    LOG_LEVEL_CASE(Info)
-    LOG_LEVEL_CASE(Debug)
-    LOG_LEVEL_CASE(Trace)
-    default:
-      aws_log_level = Aws::Utils::Logging::LogLevel::Off;
-  }
-
-#undef LOG_LEVEL_CASE
-
-  aws_options.loggingOptions.logLevel = aws_log_level;
-  // By default the AWS SDK logs to files, log to console instead
-  aws_options.loggingOptions.logger_create_fn = [] {
-    return std::make_shared<Aws::Utils::Logging::ConsoleLogSystem>(
-        aws_options.loggingOptions.logLevel);
-  };
-  Aws::InitAPI(aws_options);
-  aws_initialized.store(true);
-  return Status::OK();
-}
-
-}  // namespace
-
-Status InitializeS3(const S3GlobalOptions& options) {
-  std::lock_guard<std::mutex> lock(aws_init_lock);
-  return DoInitializeS3(options);
-}
-
-Status FinalizeS3() {
-  std::lock_guard<std::mutex> lock(aws_init_lock);
-  Aws::ShutdownAPI(aws_options);
-  aws_initialized.store(false);
-  return Status::OK();
-}
-
-Status EnsureS3Initialized() {
-  std::lock_guard<std::mutex> lock(aws_init_lock);
-  if (!aws_initialized.load()) {
-    S3GlobalOptions options{S3LogLevel::Fatal};
-    return DoInitializeS3(options);
-  }
-  return Status::OK();
-}
 
 // -----------------------------------------------------------------------
 // S3ProxyOptions implementation
@@ -261,7 +205,7 @@ std::shared_ptr<S3RetryStrategy> S3RetryStrategy::GetAwsStandardRetryStrategy(
 // S3Options implementation
 
 S3Options::S3Options() {
-  DCHECK(aws_initialized.load()) << "Must initialize S3 before using S3Options";
+  DCHECK(IsS3Initialized()) << "Must initialize S3 before using S3Options";
 }
 
 void S3Options::ConfigureDefaultCredentials() {
@@ -452,7 +396,7 @@ bool S3Options::Equals(const S3Options& other) const {
 namespace {
 
 Status CheckS3Initialized() {
-  if (!aws_initialized.load()) {
+  if (!IsS3Initialized()) {
     return Status::Invalid(
         "S3 subsystem not initialized; please call InitializeS3() "
         "before carrying out any S3-related operation");
@@ -857,8 +801,7 @@ class RegionResolver {
   }
 
   static Result<std::shared_ptr<RegionResolver>> DefaultInstance() {
-    static std::shared_ptr<RegionResolver> instance;
-    auto resolver = arrow::internal::atomic_load(&instance);
+    auto resolver = std::atomic_load(&instance_);
     if (resolver) {
       return resolver;
     }
@@ -869,12 +812,15 @@ class RegionResolver {
     // Make sure to always return the same instance even if several threads
     // call DefaultInstance at once.
     std::shared_ptr<RegionResolver> existing;
-    if (arrow::internal::atomic_compare_exchange_strong(&instance, &existing,
-                                                        *maybe_resolver)) {
+    if (std::atomic_compare_exchange_strong(&instance_, &existing, *maybe_resolver)) {
       return *maybe_resolver;
     } else {
       return existing;
     }
+  }
+
+  static void ResetDefaultInstance() {
+    std::atomic_store(&instance_, std::shared_ptr<RegionResolver>());
   }
 
   Result<std::string> ResolveRegion(const std::string& bucket) {
@@ -883,6 +829,7 @@ class RegionResolver {
     if (it != cache_.end()) {
       return it->second;
     }
+    // Cache miss: do the actual region lookup
     lock.unlock();
     ARROW_ASSIGN_OR_RAISE(auto region, ResolveRegionUncached(bucket));
     lock.lock();
@@ -905,6 +852,8 @@ class RegionResolver {
     return builder_.BuildClient().Value(&client_);
   }
 
+  static std::shared_ptr<RegionResolver> instance_;
+
   ClientBuilder builder_;
   std::shared_ptr<S3Client> client_;
 
@@ -913,6 +862,8 @@ class RegionResolver {
   // of different buckets in a single program invocation...
   std::unordered_map<std::string, std::string> cache_;
 };
+
+std::shared_ptr<RegionResolver> RegionResolver::instance_;
 
 // -----------------------------------------------------------------------
 // S3 file stream implementations
@@ -963,7 +914,7 @@ std::shared_ptr<const KeyValueMetadata> GetObjectMetadata(const ObjectResult& re
     }
   };
 
-  md->Append("Content-Length", std::to_string(result.GetContentLength()));
+  md->Append("Content-Length", ToChars(result.GetContentLength()));
   push("Cache-Control", result.GetCacheControl());
   push("Content-Type", result.GetContentType());
   push("Content-Language", result.GetContentLanguage());
@@ -2305,10 +2256,9 @@ Result<FileInfo> S3FileSystem::GetFileInfo(const std::string& s) {
     auto outcome = impl_->client_->HeadBucket(req);
     if (!outcome.IsSuccess()) {
       if (!IsNotFound(outcome.GetError())) {
-        return ErrorToStatus(
-            std::forward_as_tuple("When getting information for bucket '", path.bucket,
-                                  "': "),
-            "HeadBucket", outcome.GetError());
+        const auto msg = "When getting information for bucket '" + path.bucket + "': ";
+        return ErrorToStatus(msg, "HeadBucket", outcome.GetError(),
+                             impl_->options().region);
       }
       info.set_type(FileType::NotFound);
       return info;
@@ -2330,10 +2280,10 @@ Result<FileInfo> S3FileSystem::GetFileInfo(const std::string& s) {
       return info;
     }
     if (!IsNotFound(outcome.GetError())) {
-      return ErrorToStatus(
-          std::forward_as_tuple("When getting information for key '", path.key,
-                                "' in bucket '", path.bucket, "': "),
-          "HeadObject", outcome.GetError());
+      const auto msg = "When getting information for key '" + path.key + "' in bucket '" +
+                       path.bucket + "': ";
+      return ErrorToStatus(msg, "HeadObject", outcome.GetError(),
+                           impl_->options().region);
     }
     // Not found => perhaps it's an empty "directory"
     ARROW_ASSIGN_OR_RAISE(bool is_dir, impl_->IsEmptyDirectory(path, &outcome));
@@ -2616,9 +2566,108 @@ Result<std::shared_ptr<io::OutputStream>> S3FileSystem::OpenAppendStream(
   return Status::NotImplemented("It is not possible to append efficiently to S3 objects");
 }
 
-//
+// -----------------------------------------------------------------------
+// Initialization and finalization
+
+namespace {
+
+std::mutex aws_init_lock;
+Aws::SDKOptions aws_options;
+std::atomic<bool> aws_initialized(false);
+
+Status DoInitializeS3(const S3GlobalOptions& options) {
+  Aws::Utils::Logging::LogLevel aws_log_level;
+
+#define LOG_LEVEL_CASE(level_name)                             \
+  case S3LogLevel::level_name:                                 \
+    aws_log_level = Aws::Utils::Logging::LogLevel::level_name; \
+    break;
+
+  switch (options.log_level) {
+    LOG_LEVEL_CASE(Fatal)
+    LOG_LEVEL_CASE(Error)
+    LOG_LEVEL_CASE(Warn)
+    LOG_LEVEL_CASE(Info)
+    LOG_LEVEL_CASE(Debug)
+    LOG_LEVEL_CASE(Trace)
+    default:
+      aws_log_level = Aws::Utils::Logging::LogLevel::Off;
+  }
+
+#undef LOG_LEVEL_CASE
+
+#ifdef ARROW_S3_HAS_CRT
+  aws_options.ioOptions.clientBootstrap_create_fn =
+      [ev_threads = options.num_event_loop_threads]() {
+        // https://github.com/aws/aws-sdk-cpp/blob/1.11.15/src/aws-cpp-sdk-core/source/Aws.cpp#L65
+        Aws::Crt::Io::EventLoopGroup event_loop_group(ev_threads);
+        Aws::Crt::Io::DefaultHostResolver default_host_resolver(
+            event_loop_group, /*maxHosts=*/8, /*maxTTL=*/30);
+        auto client_bootstrap = Aws::MakeShared<Aws::Crt::Io::ClientBootstrap>(
+            "Aws_Init_Cleanup", event_loop_group, default_host_resolver);
+        client_bootstrap->EnableBlockingShutdown();
+        return client_bootstrap;
+      };
+#endif
+
+  aws_options.loggingOptions.logLevel = aws_log_level;
+  // By default the AWS SDK logs to files, log to console instead
+  aws_options.loggingOptions.logger_create_fn = [] {
+    return std::make_shared<Aws::Utils::Logging::ConsoleLogSystem>(
+        aws_options.loggingOptions.logLevel);
+  };
+#if (defined(AWS_SDK_VERSION_MAJOR) &&                          \
+     (AWS_SDK_VERSION_MAJOR > 1 || AWS_SDK_VERSION_MINOR > 9 || \
+      (AWS_SDK_VERSION_MINOR == 9 && AWS_SDK_VERSION_PATCH >= 272)))
+  // ARROW-18290: escape all special chars for compatibility with non-AWS S3 backends.
+  // This configuration options is only available with AWS SDK 1.9.272 and later.
+  aws_options.httpOptions.compliantRfc3986Encoding = true;
+#endif
+  Aws::InitAPI(aws_options);
+  aws_initialized.store(true);
+  return Status::OK();
+}
+
+Status DoFinalizeS3() {
+  RegionResolver::ResetDefaultInstance();
+  Aws::ShutdownAPI(aws_options);
+  aws_initialized.store(false);
+  return Status::OK();
+}
+
+}  // namespace
+
+Status InitializeS3(const S3GlobalOptions& options) {
+  std::lock_guard<std::mutex> lock(aws_init_lock);
+  return DoInitializeS3(options);
+}
+
+Status EnsureS3Initialized() {
+  std::lock_guard<std::mutex> lock(aws_init_lock);
+  if (!aws_initialized.load()) {
+    S3GlobalOptions options{S3LogLevel::Fatal};
+    return DoInitializeS3(options);
+  }
+  return Status::OK();
+}
+
+Status FinalizeS3() {
+  std::lock_guard<std::mutex> lock(aws_init_lock);
+  return DoFinalizeS3();
+}
+
+Status EnsureS3Finalized() {
+  std::lock_guard<std::mutex> lock(aws_init_lock);
+  if (aws_initialized.load()) {
+    return DoFinalizeS3();
+  }
+  return Status::OK();
+}
+
+bool IsS3Initialized() { return aws_initialized.load(); }
+
+// -----------------------------------------------------------------------
 // Top-level utility functions
-//
 
 Result<std::string> ResolveS3BucketRegion(const std::string& bucket) {
   if (bucket.empty() || bucket.find_first_of(kSep) != bucket.npos ||

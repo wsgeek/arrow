@@ -19,11 +19,14 @@
 
 #pragma once
 
-#include "arrow/compute/exec/exec_plan.h"
+#include <memory>
+
+#include "arrow/compute/type_fwd.h"
 #include "arrow/engine/substrait/extension_set.h"
 #include "arrow/engine/substrait/options.h"
 #include "arrow/engine/substrait/visibility.h"
-#include "arrow/type_fwd.h"
+#include "arrow/result.h"
+#include "arrow/status.h"
 
 #include "substrait/plan.pb.h"  // IWYU pragma: export
 
@@ -50,7 +53,7 @@ Status AddExtensionSetToPlan(const ExtensionSet& ext_set, substrait::Plan* plan)
 /// correspond to Substrait's URI/name pairs
 ARROW_ENGINE_EXPORT
 Result<ExtensionSet> GetExtensionSetFromPlan(
-    const substrait::Plan& plan,
+    const substrait::Plan& plan, const ConversionOptions& conversion_options,
     const ExtensionIdRegistry* registry = default_extension_id_registry());
 
 /// \brief Serialize a declaration into a substrait::Plan.

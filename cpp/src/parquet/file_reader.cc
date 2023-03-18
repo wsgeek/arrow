@@ -40,6 +40,7 @@
 #include "parquet/exception.h"
 #include "parquet/file_writer.h"
 #include "parquet/metadata.h"
+#include "parquet/page_index.h"
 #include "parquet/platform.h"
 #include "parquet/properties.h"
 #include "parquet/schema.h"
@@ -215,8 +216,8 @@ class SerializedRowGroup : public RowGroupReader::Contents {
 
     // Column is encrypted only if crypto_metadata exists.
     if (!crypto_metadata) {
-      return PageReader::Open(stream, col->num_values(), col->compression(),
-                              always_compressed, properties_.memory_pool());
+      return PageReader::Open(stream, col->num_values(), col->compression(), properties_,
+                              always_compressed);
     }
 
     if (file_decryptor_ == nullptr) {
@@ -237,8 +238,8 @@ class SerializedRowGroup : public RowGroupReader::Contents {
       data_decryptor = file_decryptor_->GetFooterDecryptorForColumnData();
       CryptoContext ctx(col->has_dictionary_page(), row_group_ordinal_,
                         static_cast<int16_t>(i), meta_decryptor, data_decryptor);
-      return PageReader::Open(stream, col->num_values(), col->compression(),
-                              always_compressed, properties_.memory_pool(), &ctx);
+      return PageReader::Open(stream, col->num_values(), col->compression(), properties_,
+                              always_compressed, &ctx);
     }
 
     // The column is encrypted with its own key
@@ -252,8 +253,8 @@ class SerializedRowGroup : public RowGroupReader::Contents {
 
     CryptoContext ctx(col->has_dictionary_page(), row_group_ordinal_,
                       static_cast<int16_t>(i), meta_decryptor, data_decryptor);
-    return PageReader::Open(stream, col->num_values(), col->compression(),
-                            always_compressed, properties_.memory_pool(), &ctx);
+    return PageReader::Open(stream, col->num_values(), col->compression(), properties_,
+                            always_compressed, &ctx);
   }
 
  private:
@@ -294,13 +295,29 @@ class SerializedFile : public ParquetFileReader::Contents {
   }
 
   std::shared_ptr<RowGroupReader> GetRowGroup(int i) override {
-    std::unique_ptr<SerializedRowGroup> contents(
-        new SerializedRowGroup(source_, cached_source_, source_size_,
-                               file_metadata_.get(), i, properties_, file_decryptor_));
+    std::unique_ptr<SerializedRowGroup> contents = std::make_unique<SerializedRowGroup>(
+        source_, cached_source_, source_size_, file_metadata_.get(), i, properties_,
+        file_decryptor_);
     return std::make_shared<RowGroupReader>(std::move(contents));
   }
 
   std::shared_ptr<FileMetaData> metadata() const override { return file_metadata_; }
+
+  std::shared_ptr<PageIndexReader> GetPageIndexReader() override {
+    if (!file_metadata_) {
+      // Usually this won't happen if user calls one of the static Open() functions
+      // to create a ParquetFileReader instance. But if user calls the constructor
+      // directly and calls GetPageIndexReader() before Open() then this could happen.
+      throw ParquetException(
+          "Cannot call GetPageIndexReader() due to missing file metadata. Did you "
+          "forget to call ParquetFileReader::Open() first?");
+    }
+    if (!page_index_reader_) {
+      page_index_reader_ = PageIndexReader::Make(source_.get(), file_metadata_,
+                                                 properties_, file_decryptor_);
+    }
+    return page_index_reader_;
+  }
 
   void set_metadata(std::shared_ptr<FileMetaData> metadata) {
     file_metadata_ = std::move(metadata);
@@ -434,7 +451,8 @@ class SerializedFile : public ParquetFileReader::Contents {
     END_PARQUET_CATCH_EXCEPTIONS
     // Assumes this is kept alive externally
     return source_->ReadAsync(source_size_ - footer_read_size, footer_read_size)
-        .Then([=](const std::shared_ptr<::arrow::Buffer>& footer_buffer)
+        .Then([this,
+               footer_read_size](const std::shared_ptr<::arrow::Buffer>& footer_buffer)
                   -> ::arrow::Future<> {
           uint32_t metadata_len;
           BEGIN_PARQUET_CATCH_EXCEPTIONS
@@ -452,7 +470,8 @@ class SerializedFile : public ParquetFileReader::Contents {
                                                     footer_read_size, metadata_len);
           }
           return source_->ReadAsync(metadata_start, metadata_len)
-              .Then([=](const std::shared_ptr<::arrow::Buffer>& metadata_buffer) {
+              .Then([this, footer_buffer, footer_read_size, metadata_len](
+                        const std::shared_ptr<::arrow::Buffer>& metadata_buffer) {
                 return ParseMaybeEncryptedMetaDataAsync(footer_buffer, metadata_buffer,
                                                         footer_read_size, metadata_len);
               });
@@ -478,7 +497,8 @@ class SerializedFile : public ParquetFileReader::Contents {
       int64_t metadata_start = read_size.first;
       metadata_len = read_size.second;
       return source_->ReadAsync(metadata_start, metadata_len)
-          .Then([=](const std::shared_ptr<::arrow::Buffer>& metadata_buffer) {
+          .Then([this, metadata_len, is_encrypted_footer](
+                    const std::shared_ptr<::arrow::Buffer>& metadata_buffer) {
             // Continue and read the file footer
             return ParseMetaDataFinal(metadata_buffer, metadata_len, is_encrypted_footer);
           });
@@ -519,7 +539,7 @@ class SerializedFile : public ParquetFileReader::Contents {
   int64_t source_size_;
   std::shared_ptr<FileMetaData> file_metadata_;
   ReaderProperties properties_;
-
+  std::shared_ptr<PageIndexReader> page_index_reader_;
   std::shared_ptr<InternalFileDecryptor> file_decryptor_;
 
   // \return The true length of the metadata in bytes
@@ -725,7 +745,7 @@ std::unique_ptr<ParquetFileReader> ParquetFileReader::Open(
     std::shared_ptr<::arrow::io::RandomAccessFile> source, const ReaderProperties& props,
     std::shared_ptr<FileMetaData> metadata) {
   auto contents = SerializedFile::Open(std::move(source), props, std::move(metadata));
-  std::unique_ptr<ParquetFileReader> result(new ParquetFileReader());
+  std::unique_ptr<ParquetFileReader> result = std::make_unique<ParquetFileReader>();
   result->Open(std::move(contents));
   return result;
 }
@@ -759,7 +779,7 @@ std::unique_ptr<ParquetFileReader> ParquetFileReader::OpenFile(
       completed.MarkFinished(contents.status());
       return;
     }
-    std::unique_ptr<ParquetFileReader> result(new ParquetFileReader());
+    std::unique_ptr<ParquetFileReader> result = std::make_unique<ParquetFileReader>();
     result->Open(fut.MoveResult().MoveValueUnsafe());
     completed.MarkFinished(std::move(result));
   });
@@ -779,6 +799,10 @@ void ParquetFileReader::Close() {
 
 std::shared_ptr<FileMetaData> ParquetFileReader::metadata() const {
   return contents_->metadata();
+}
+
+std::shared_ptr<PageIndexReader> ParquetFileReader::GetPageIndexReader() {
+  return contents_->GetPageIndexReader();
 }
 
 std::shared_ptr<RowGroupReader> ParquetFileReader::RowGroup(int i) {

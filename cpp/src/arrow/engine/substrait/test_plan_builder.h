@@ -27,16 +27,18 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#include "arrow/buffer.h"
-#include "arrow/engine/substrait/extension_set.h"
+#include "arrow/engine/substrait/visibility.h"
 #include "arrow/result.h"
-#include "arrow/table.h"
-#include "arrow/type.h"
+#include "arrow/type_fwd.h"
 
 namespace arrow {
 namespace engine {
+
+struct Id;
+
 namespace internal {
 
 /// \brief Create a scan->project->sink plan for tests
@@ -55,17 +57,19 @@ namespace internal {
 ARROW_ENGINE_EXPORT Result<std::shared_ptr<Buffer>> CreateScanProjectSubstrait(
     Id function_id, const std::shared_ptr<Table>& input_table,
     const std::vector<std::string>& arguments,
+    const std::unordered_map<std::string, std::vector<std::string>>& options,
     const std::vector<std::shared_ptr<DataType>>& data_types,
     const DataType& output_type);
 
 /// \brief Create a scan->aggregate->sink plan for tests
 ///
 /// The plan will create an aggregate with one grouping set (defined by
-/// key_idxs) and one measure.  The measure will be a unary function
-/// defined by `function_id` and a direct reference to `arg_idx`.
+/// key_idxs) and one measure.  The measure will be a function
+/// defined by `function_id` and direct references to `arg_idxs`.
 ARROW_ENGINE_EXPORT Result<std::shared_ptr<Buffer>> CreateScanAggSubstrait(
     Id function_id, const std::shared_ptr<Table>& input_table,
-    const std::vector<int>& key_idxs, int arg_idx, const DataType& output_type);
+    const std::vector<int>& key_idxs, const std::vector<int>& arg_idxs,
+    const DataType& output_type);
 
 }  // namespace internal
 }  // namespace engine

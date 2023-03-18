@@ -30,7 +30,7 @@
 #include "arrow/compute/api_scalar.h"
 #include "arrow/compute/api_vector.h"
 #include "arrow/compute/cast.h"
-#include "arrow/compute/exec/expression_internal.h"
+#include "arrow/compute/expression_internal.h"
 #include "arrow/compute/row/grouper.h"
 #include "arrow/dataset/dataset_internal.h"
 #include "arrow/filesystem/path_util.h"
@@ -780,7 +780,7 @@ Result<PartitionPathFormat> HivePartitioning::FormatValues(
       // field_index <-> path nesting relation
       segments[i] = name + "=" + hive_options_.null_fallback;
     } else {
-      segments[i] = name + "=" + values[i]->ToString();
+      segments[i] = name + "=" + arrow::internal::UriEscape(values[i]->ToString());
     }
   }
 

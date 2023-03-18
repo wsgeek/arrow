@@ -19,12 +19,14 @@
 
 # Java Plasma Client
 
+This is deprecated since 10.0.0. This will be removed from 12.0.0 or so.
+
 ## Setup Build Environment
 
 Install:
  - java 8 or later
  - maven 3.3 or later
- - the same requirement of build [Arrow C++](https://github.com/apache/arrow/tree/master/cpp)
+ - the same requirement of build [Arrow C++](https://github.com/apache/arrow/tree/main/cpp)
 
 ## Build the jar of plasma client
 

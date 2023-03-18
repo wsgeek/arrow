@@ -49,6 +49,7 @@ namespace arrow {
 
 using internal::checked_cast;
 using internal::StringFormatter;
+using internal::ToChars;
 
 namespace {
 
@@ -376,6 +377,18 @@ class ArrayPrinter : public PrettyPrinter {
     return PrettyPrint(*array.indices(), ChildOptions(true), sink_);
   }
 
+  Status Visit(const RunEndEncodedArray& array) {
+    Newline();
+    Indent();
+    Write("-- run_ends:\n");
+    RETURN_NOT_OK(PrettyPrint(*array.run_ends(), ChildOptions(true), sink_));
+
+    Newline();
+    Indent();
+    Write("-- values:\n");
+    return PrettyPrint(*array.values(), ChildOptions(true), sink_);
+  }
+
   Status Print(const Array& array) {
     RETURN_NOT_OK(VisitArrayInline(array, this));
     Flush();
@@ -566,7 +579,7 @@ class SchemaPrinter : public PrettyPrinter {
       }
 
       Write(metadata.key(i) + ": '" + metadata.value(i).substr(0, truncated_size) +
-            "' + " + std::to_string(size - truncated_size));
+            "' + " + ToChars(size - truncated_size));
     }
   }
 

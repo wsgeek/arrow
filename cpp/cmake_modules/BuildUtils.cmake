@@ -176,9 +176,12 @@ function(ADD_ARROW_LIB LIB_NAME)
       BUILD_SHARED
       BUILD_STATIC
       CMAKE_PACKAGE_NAME
+      INSTALL_ARCHIVE_DIR
+      INSTALL_LIBRARY_DIR
+      INSTALL_RUNTIME_DIR
       PKG_CONFIG_NAME
-      SHARED_LINK_FLAGS
-      PRECOMPILED_HEADER_LIB)
+      PRECOMPILED_HEADER_LIB
+      SHARED_LINK_FLAGS)
   set(multi_value_args
       SOURCES
       PRECOMPILED_HEADERS
@@ -189,6 +192,7 @@ function(ADD_ARROW_LIB LIB_NAME)
       EXTRA_INCLUDES
       PRIVATE_INCLUDES
       DEPENDENCIES
+      DEFINITIONS
       SHARED_INSTALL_INTERFACE_LIBS
       STATIC_INSTALL_INTERFACE_LIBS
       OUTPUT_PATH)
@@ -247,6 +251,9 @@ function(ADD_ARROW_LIB LIB_NAME)
     if(ARG_DEPENDENCIES)
       add_dependencies(${LIB_NAME}_objlib ${ARG_DEPENDENCIES})
     endif()
+    if(ARG_DEFINITIONS)
+      target_compile_definitions(${LIB_NAME}_objlib PRIVATE ${ARG_DEFINITIONS})
+    endif()
     if(ARG_PRECOMPILED_HEADER_LIB)
       reuse_precompiled_header_lib(${LIB_NAME}_objlib ${ARG_PRECOMPILED_HEADER_LIB})
     endif()
@@ -254,7 +261,6 @@ function(ADD_ARROW_LIB LIB_NAME)
       target_precompile_headers(${LIB_NAME}_objlib PRIVATE ${ARG_PRECOMPILED_HEADERS})
     endif()
     set(LIB_DEPS $<TARGET_OBJECTS:${LIB_NAME}_objlib>)
-    set(LIB_INCLUDES)
     set(EXTRA_DEPS)
 
     if(ARG_OUTPUTS)
@@ -283,18 +289,38 @@ function(ADD_ARROW_LIB LIB_NAME)
     # TODO: add PCH directives
     set(LIB_DEPS ${ARG_SOURCES})
     set(EXTRA_DEPS ${ARG_DEPENDENCIES})
-
-    if(ARG_EXTRA_INCLUDES)
-      set(LIB_INCLUDES ${ARG_EXTRA_INCLUDES})
-    endif()
   endif()
 
-  set(RUNTIME_INSTALL_DIR bin)
+  if(ARG_EXTRA_INCLUDES)
+    set(LIB_INCLUDES ${ARG_EXTRA_INCLUDES})
+  else()
+    set(LIB_INCLUDES "")
+  endif()
+
+  if(ARG_INSTALL_ARCHIVE_DIR)
+    set(INSTALL_ARCHIVE_DIR ${ARG_INSTALL_ARCHIVE_DIR})
+  else()
+    set(INSTALL_ARCHIVE_DIR ${CMAKE_INSTALL_LIBDIR})
+  endif()
+  if(ARG_INSTALL_LIBRARY_DIR)
+    set(INSTALL_LIBRARY_DIR ${ARG_INSTALL_LIBRARY_DIR})
+  else()
+    set(INSTALL_LIBRARY_DIR ${CMAKE_INSTALL_LIBDIR})
+  endif()
+  if(ARG_INSTALL_RUNTIME_DIR)
+    set(INSTALL_RUNTIME_DIR ${ARG_INSTALL_RUNTIME_DIR})
+  else()
+    set(INSTALL_RUNTIME_DIR bin)
+  endif()
 
   if(BUILD_SHARED)
     add_library(${LIB_NAME}_shared SHARED ${LIB_DEPS})
     if(EXTRA_DEPS)
       add_dependencies(${LIB_NAME}_shared ${EXTRA_DEPS})
+    endif()
+
+    if(ARG_DEFINITIONS)
+      target_compile_definitions(${LIB_NAME}_shared PRIVATE ${ARG_DEFINITIONS})
     endif()
 
     if(ARG_PRECOMPILED_HEADER_LIB)
@@ -374,9 +400,9 @@ function(ADD_ARROW_LIB LIB_NAME)
 
     install(TARGETS ${LIB_NAME}_shared ${INSTALL_IS_OPTIONAL}
             EXPORT ${LIB_NAME}_targets
-            RUNTIME DESTINATION ${RUNTIME_INSTALL_DIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${INSTALL_ARCHIVE_DIR}
+            LIBRARY DESTINATION ${INSTALL_LIBRARY_DIR}
+            RUNTIME DESTINATION ${INSTALL_RUNTIME_DIR}
             INCLUDES
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   endif()
@@ -385,6 +411,10 @@ function(ADD_ARROW_LIB LIB_NAME)
     add_library(${LIB_NAME}_static STATIC ${LIB_DEPS})
     if(EXTRA_DEPS)
       add_dependencies(${LIB_NAME}_static ${EXTRA_DEPS})
+    endif()
+
+    if(ARG_DEFINITIONS)
+      target_compile_definitions(${LIB_NAME}_static PRIVATE ${ARG_DEFINITIONS})
     endif()
 
     if(ARG_PRECOMPILED_HEADER_LIB)
@@ -441,9 +471,9 @@ function(ADD_ARROW_LIB LIB_NAME)
 
     install(TARGETS ${LIB_NAME}_static ${INSTALL_IS_OPTIONAL}
             EXPORT ${LIB_NAME}_targets
-            RUNTIME DESTINATION ${RUNTIME_INSTALL_DIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${INSTALL_ARCHIVE_DIR}
+            LIBRARY DESTINATION ${INSTALL_LIBRARY_DIR}
+            RUNTIME DESTINATION ${INSTALL_RUNTIME_DIR}
             INCLUDES
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   endif()
@@ -632,7 +662,8 @@ function(ADD_TEST_CASE REL_TEST_NAME)
       LABELS
       EXTRA_LABELS
       TEST_ARGUMENTS
-      PREFIX)
+      PREFIX
+      DEFINITIONS)
   cmake_parse_arguments(ARG
                         "${options}"
                         "${one_value_args}"
@@ -701,6 +732,10 @@ function(ADD_TEST_CASE REL_TEST_NAME)
 
   if(ARG_EXTRA_DEPENDENCIES)
     add_dependencies(${TEST_NAME} ${ARG_EXTRA_DEPENDENCIES})
+  endif()
+
+  if(ARG_DEFINITIONS)
+    target_compile_definitions(${TEST_NAME} PRIVATE ${ARG_DEFINITIONS})
   endif()
 
   if(ARROW_TEST_MEMCHECK AND NOT ARG_NO_VALGRIND)
@@ -854,7 +889,7 @@ function(ADD_FUZZ_TARGET REL_FUZZING_NAME)
     message(SEND_ERROR "Error: unrecognized arguments: ${ARG_UNPARSED_ARGUMENTS}")
   endif()
 
-  if(NO_FUZZING)
+  if(NOT ARROW_FUZZING)
     return()
   endif()
 
@@ -909,8 +944,12 @@ function(ARROW_INSTALL_ALL_HEADERS PATH)
 endfunction()
 
 function(ARROW_ADD_PKG_CONFIG MODULE)
-  configure_file(${MODULE}.pc.in "${CMAKE_CURRENT_BINARY_DIR}/${MODULE}.pc" @ONLY)
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${MODULE}.pc"
+  configure_file(${MODULE}.pc.in "${CMAKE_CURRENT_BINARY_DIR}/${MODULE}.pc.generate.in"
+                 @ONLY)
+  file(GENERATE
+       OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${MODULE}.pc"
+       INPUT "${CMAKE_CURRENT_BINARY_DIR}/${MODULE}.pc.generate.in")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${MODULE}.pc"
           DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
 endfunction()
 

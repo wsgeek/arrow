@@ -51,16 +51,51 @@ std::string ToString(JoinType t) {
 }
 
 Result<std::shared_ptr<SourceNodeOptions>> SourceNodeOptions::FromTable(
-    const Table& table, arrow::internal::Executor* exc) {
+    const Table& table, arrow::internal::Executor* executor) {
   std::shared_ptr<RecordBatchReader> reader = std::make_shared<TableBatchReader>(table);
 
-  if (exc == nullptr) return Status::TypeError("No executor provided.");
+  if (executor == nullptr) return Status::TypeError("No executor provided.");
 
   // Map the RecordBatchReader to a SourceNode
-  ARROW_ASSIGN_OR_RAISE(auto batch_gen, MakeReaderGenerator(std::move(reader), exc));
+  ARROW_ASSIGN_OR_RAISE(auto batch_gen, MakeReaderGenerator(std::move(reader), executor));
 
   return std::make_shared<SourceNodeOptions>(table.schema(), batch_gen);
 }
+
+Result<std::shared_ptr<SourceNodeOptions>> SourceNodeOptions::FromRecordBatchReader(
+    std::shared_ptr<RecordBatchReader> reader, std::shared_ptr<Schema> schema,
+    arrow::internal::Executor* executor) {
+  if (executor == nullptr) return Status::TypeError("No executor provided.");
+
+  // Map the RecordBatchReader to a SourceNode
+  ARROW_ASSIGN_OR_RAISE(auto batch_gen, MakeReaderGenerator(std::move(reader), executor));
+
+  return std::make_shared<SourceNodeOptions>(std::move(schema), std::move(batch_gen));
+}
+
+namespace {
+ExecBatchIteratorMaker VecToItMaker(std::vector<ExecBatch> batches) {
+  auto batches_ptr = std::make_shared<std::vector<std::shared_ptr<ExecBatch>>>();
+  batches_ptr->reserve(batches.size());
+  for (auto batch : batches) {
+    batches_ptr->push_back(std::make_shared<ExecBatch>(std::move(batch)));
+  }
+  return
+      [batches_ptr = std::move(batches_ptr)] { return MakeVectorIterator(*batches_ptr); };
+}
+}  // namespace
+
+ExecBatchSourceNodeOptions::ExecBatchSourceNodeOptions(
+    std::shared_ptr<Schema> schema, std::vector<ExecBatch> batches,
+    ::arrow::internal::Executor* io_executor)
+    : SchemaSourceNodeOptions(std::move(schema), VecToItMaker(std::move(batches)),
+                              io_executor) {}
+
+ExecBatchSourceNodeOptions::ExecBatchSourceNodeOptions(std::shared_ptr<Schema> schema,
+                                                       std::vector<ExecBatch> batches,
+                                                       bool requires_io)
+    : SchemaSourceNodeOptions(std::move(schema), VecToItMaker(std::move(batches)),
+                              requires_io) {}
 
 }  // namespace compute
 }  // namespace arrow

@@ -17,17 +17,22 @@
 
 #include "arrow/engine/substrait/test_plan_builder.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <utility>
 
-#include "arrow/compute/exec/exec_plan.h"
+#include "arrow/buffer.h"
+#include "arrow/engine/substrait/extension_set.h"
+#include "arrow/engine/substrait/options.h"
 #include "arrow/engine/substrait/plan_internal.h"
 #include "arrow/engine/substrait/type_internal.h"
-#include "arrow/util/macros.h"
+#include "arrow/status.h"
+#include "arrow/table.h"
+#include "arrow/type_fwd.h"
 
 #include "substrait/algebra.pb.h"
-#include "substrait/plan.pb.h"
-#include "substrait/type.pb.h"
 
 namespace arrow {
 namespace engine {
@@ -67,6 +72,7 @@ void CreateDirectReference(int32_t index, substrait::Expression* expr) {
 
 Result<std::unique_ptr<substrait::ProjectRel>> CreateProject(
     Id function_id, const std::vector<std::string>& arguments,
+    const std::unordered_map<std::string, std::vector<std::string>> options,
     const std::vector<std::shared_ptr<DataType>>& arg_types, const DataType& output_type,
     ExtensionSet* ext_set) {
   auto project = std::make_unique<substrait::ProjectRel>();
@@ -87,16 +93,16 @@ Result<std::unique_ptr<substrait::ProjectRel>> CreateProject(
     } else {
       // If it doesn't have a type then it's an enum
       const std::string& enum_value = arguments[arg_index];
-      auto enum_ = std::make_unique<substrait::FunctionArgument::Enum>();
-      if (enum_value.size() > 0) {
-        enum_->set_specified(enum_value);
-      } else {
-        auto unspecified = std::make_unique<google::protobuf::Empty>();
-        enum_->set_allocated_unspecified(unspecified.release());
-      }
-      argument->set_allocated_enum_(enum_.release());
+      argument->set_enum_(enum_value);
     }
     arg_index++;
+  }
+  for (const auto& opt : options) {
+    substrait::FunctionOption* option = call->add_options();
+    option->set_name(opt.first);
+    for (const std::string& pref : opt.second) {
+      option->add_preference(pref);
+    }
   }
 
   ARROW_ASSIGN_OR_RAISE(
@@ -112,7 +118,7 @@ Result<std::unique_ptr<substrait::ProjectRel>> CreateProject(
 
 Result<std::unique_ptr<substrait::AggregateRel>> CreateAgg(Id function_id,
                                                            const std::vector<int>& keys,
-                                                           int arg_idx,
+                                                           std::vector<int> arg_idxs,
                                                            const DataType& output_type,
                                                            ExtensionSet* ext_set) {
   auto agg = std::make_unique<substrait::AggregateRel>();
@@ -131,10 +137,12 @@ Result<std::unique_ptr<substrait::AggregateRel>> CreateAgg(Id function_id,
 
   agg_func->set_function_reference(function_anchor);
 
-  substrait::FunctionArgument* arg = agg_func->add_arguments();
-  auto arg_expr = std::make_unique<substrait::Expression>();
-  CreateDirectReference(arg_idx, arg_expr.get());
-  arg->set_allocated_value(arg_expr.release());
+  for (int arg_idx : arg_idxs) {
+    substrait::FunctionArgument* arg = agg_func->add_arguments();
+    auto arg_expr = std::make_unique<substrait::Expression>();
+    CreateDirectReference(arg_idx, arg_expr.get());
+    arg->set_allocated_value(arg_expr.release());
+  }
 
   agg_func->set_phase(substrait::AggregationPhase::AGGREGATION_PHASE_INITIAL_TO_RESULT);
   agg_func->set_invocation(
@@ -150,9 +158,19 @@ Result<std::unique_ptr<substrait::AggregateRel>> CreateAgg(Id function_id,
   return agg;
 }
 
+std::unique_ptr<substrait::Version> CreateTestVersion() {
+  auto version = std::make_unique<substrait::Version>();
+  version->set_major_number(std::numeric_limits<uint32_t>::max());
+  version->set_minor_number(std::numeric_limits<uint32_t>::max());
+  version->set_patch_number(std::numeric_limits<uint32_t>::max());
+  version->set_producer("Arrow unit test");
+  return version;
+}
+
 Result<std::unique_ptr<substrait::Plan>> CreatePlan(std::unique_ptr<substrait::Rel> root,
                                                     ExtensionSet* ext_set) {
   auto plan = std::make_unique<substrait::Plan>();
+  plan->set_allocated_version(CreateTestVersion().release());
 
   substrait::PlanRel* plan_rel = plan->add_relations();
   auto rel_root = std::make_unique<substrait::RelRoot>();
@@ -166,6 +184,7 @@ Result<std::unique_ptr<substrait::Plan>> CreatePlan(std::unique_ptr<substrait::R
 Result<std::shared_ptr<Buffer>> CreateScanProjectSubstrait(
     Id function_id, const std::shared_ptr<Table>& input_table,
     const std::vector<std::string>& arguments,
+    const std::unordered_map<std::string, std::vector<std::string>>& options,
     const std::vector<std::shared_ptr<DataType>>& data_types,
     const DataType& output_type) {
   ExtensionSet ext_set;
@@ -173,7 +192,7 @@ Result<std::shared_ptr<Buffer>> CreateScanProjectSubstrait(
                         CreateRead(*input_table, &ext_set));
   ARROW_ASSIGN_OR_RAISE(
       std::unique_ptr<substrait::ProjectRel> project,
-      CreateProject(function_id, arguments, data_types, output_type, &ext_set));
+      CreateProject(function_id, arguments, options, data_types, output_type, &ext_set));
 
   auto read_rel = std::make_unique<substrait::Rel>();
   read_rel->set_allocated_read(read.release());
@@ -189,13 +208,15 @@ Result<std::shared_ptr<Buffer>> CreateScanProjectSubstrait(
 
 Result<std::shared_ptr<Buffer>> CreateScanAggSubstrait(
     Id function_id, const std::shared_ptr<Table>& input_table,
-    const std::vector<int>& key_idxs, int arg_idx, const DataType& output_type) {
+    const std::vector<int>& key_idxs, const std::vector<int>& arg_idxs,
+    const DataType& output_type) {
   ExtensionSet ext_set;
 
   ARROW_ASSIGN_OR_RAISE(std::unique_ptr<substrait::ReadRel> read,
                         CreateRead(*input_table, &ext_set));
-  ARROW_ASSIGN_OR_RAISE(std::unique_ptr<substrait::AggregateRel> agg,
-                        CreateAgg(function_id, key_idxs, arg_idx, output_type, &ext_set));
+  ARROW_ASSIGN_OR_RAISE(
+      std::unique_ptr<substrait::AggregateRel> agg,
+      CreateAgg(function_id, key_idxs, arg_idxs, output_type, &ext_set));
 
   auto read_rel = std::make_unique<substrait::Rel>();
   read_rel->set_allocated_read(read.release());

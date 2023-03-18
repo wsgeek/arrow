@@ -23,15 +23,18 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/internal/debug"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/decimal128"
+	"github.com/apache/arrow/go/v12/arrow/decimal256"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
 // Reader wraps encoding/csv.Reader and creates array.Records from a schema.
@@ -67,6 +70,7 @@ type Reader struct {
 //
 // This can be further customized using the WithColumnTypes and
 // WithIncludeColumns options.
+// For BinaryType the reader will use base64 decoding with padding as per base64.StdDecoding.
 func NewInferringReader(r io.Reader, opts ...Option) *Reader {
 	rr := &Reader{
 		r:                csv.NewReader(r),
@@ -454,6 +458,22 @@ func (r *Reader) initFieldConverter(bldr array.Builder) func(string) {
 		return func(str string) {
 			r.parseTime32(bldr, str, dt.Unit)
 		}
+	case *arrow.Decimal128Type:
+		return func(str string) {
+			r.parseDecimal128(bldr, str, dt.Precision, dt.Scale)
+		}
+	case *arrow.Decimal256Type:
+		return func(str string) {
+			r.parseDecimal256(bldr, str, dt.Precision, dt.Scale)
+		}
+	case *arrow.ListType:
+		return func(s string) {
+			r.parseList(bldr, s)
+		}
+	case *arrow.BinaryType:
+		return func(s string) {
+			r.parseBinaryType(bldr, s)
+		}
 	default:
 		panic(fmt.Errorf("arrow/csv: unhandled field type %T", bldr.Type()))
 	}
@@ -679,6 +699,78 @@ func (r *Reader) parseTime32(field array.Builder, str string, unit arrow.TimeUni
 		return
 	}
 	field.(*array.Time32Builder).Append(val)
+}
+
+func (r *Reader) parseDecimal128(field array.Builder, str string, prec, scale int32) {
+	if r.isNull(str) {
+		field.AppendNull()
+		return
+	}
+
+	val, err := decimal128.FromString(str, prec, scale)
+	if err != nil && r.err == nil {
+		r.err = err
+		field.AppendNull()
+		return
+	}
+	field.(*array.Decimal128Builder).Append(val)
+}
+
+func (r *Reader) parseDecimal256(field array.Builder, str string, prec, scale int32) {
+	if r.isNull(str) {
+		field.AppendNull()
+		return
+	}
+
+	val, err := decimal256.FromString(str, prec, scale)
+	if err != nil && r.err == nil {
+		r.err = err
+		field.AppendNull()
+		return
+	}
+	field.(*array.Decimal256Builder).Append(val)
+}
+
+func (r *Reader) parseList(field array.Builder, str string) {
+	if r.isNull(str) {
+		field.AppendNull()
+		return
+	}
+	if !(strings.HasPrefix(str, "{") && strings.HasSuffix(str, "}")) {
+		r.err = errors.New("invalid list format. should start with '{' and end with '}'")
+		return
+	}
+	str = strings.Trim(str, "{}")
+	listBldr := field.(*array.ListBuilder)
+	listBldr.Append(true)
+	if len(str) == 0 {
+		// we don't want to create the csv reader if we already know the
+		// string is empty
+		return
+	}
+	valueBldr := listBldr.ValueBuilder()
+	reader := csv.NewReader(strings.NewReader(str))
+	items, err := reader.Read()
+	if err != nil {
+		r.err = err
+		return
+	}
+	for _, str := range items {
+		r.initFieldConverter(valueBldr)(str)
+	}
+}
+
+func (r *Reader) parseBinaryType(field array.Builder, str string) {
+	// specialize the implementation when we know we cannot have nulls
+	if str != "" && r.isNull(str) {
+		field.AppendNull()
+		return
+	}
+	decodedVal, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
+		panic("cannot decode base64 string " + str)
+	}
+	field.(*array.BinaryBuilder).Append(decodedVal)
 }
 
 // Retain increases the reference count by 1.

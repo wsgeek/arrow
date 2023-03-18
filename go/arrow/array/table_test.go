@@ -21,9 +21,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
 func TestChunked(t *testing.T) {
@@ -456,8 +456,13 @@ func TestTable(t *testing.T) {
 
 	cols := []arrow.Column{*col1, *col2}
 
+	slices := [][]arrow.Array{col1.Data().Chunks(), col2.Data().Chunks()}
+
 	tbl := array.NewTable(schema, cols, -1)
 	defer tbl.Release()
+
+	tbl2 := array.NewTableFromSlice(schema, slices)
+	defer tbl2.Release()
 
 	tbl.Retain()
 	tbl.Release()
@@ -473,6 +478,16 @@ func TestTable(t *testing.T) {
 		t.Fatalf("invalid number of columns: got=%d, want=%d", got, want)
 	}
 	if got, want := tbl.Column(0).Name(), col1.Name(); got != want {
+		t.Fatalf("invalid column: got=%q, want=%q", got, want)
+	}
+
+	if got, want := tbl2.NumRows(), int64(10); got != want {
+		t.Fatalf("invalid number of rows: got=%d, want=%d", got, want)
+	}
+	if got, want := tbl2.NumCols(), int64(2); got != want {
+		t.Fatalf("invalid number of columns: got=%d, want=%d", got, want)
+	}
+	if got, want := tbl2.Column(0).Name(), col1.Name(); got != want {
 		t.Fatalf("invalid column: got=%q, want=%q", got, want)
 	}
 
@@ -695,6 +710,9 @@ func TestTableReader(t *testing.T) {
 
 	for tr.Next() {
 	}
+	if err := tr.Err(); err != nil {
+		t.Fatalf("tr err: %#v", err)
+	}
 
 	for _, tc := range []struct {
 		sz   int64
@@ -728,6 +746,9 @@ func TestTableReader(t *testing.T) {
 				}
 				n++
 				sum += rec.NumRows()
+			}
+			if err := tr.Err(); err != nil {
+				t.Fatalf("tr err: %#v", err)
 			}
 
 			if got, want := n, tc.n; got != want {

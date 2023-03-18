@@ -45,6 +45,9 @@ class ARROW_EXPORT Uri {
   /// explicit scheme.
   std::string scheme() const;
 
+  /// Convenience function that returns true if the scheme() is "file"
+  bool is_file_scheme() const;
+
   /// Whether the URI has an explicit host name.  This may return true if
   /// the URI has an empty host (e.g. "file:///tmp/foo"), while it returns
   /// false is the URI has not host component at all (e.g. "file:/tmp/foo").
@@ -89,24 +92,27 @@ class ARROW_EXPORT Uri {
 };
 
 /// Percent-encode the input string, for use e.g. as a URI query parameter.
+///
+/// This will escape directory separators, making this function unsuitable
+/// for encoding URI paths directly. See UriFromAbsolutePath() instead.
 ARROW_EXPORT
-std::string UriEscape(const std::string& s);
+std::string UriEscape(std::string_view s);
 
 ARROW_EXPORT
-std::string UriUnescape(const std::string_view s);
+std::string UriUnescape(std::string_view s);
 
 /// Encode a host for use within a URI, such as "localhost",
 /// "127.0.0.1", or "[::1]".
 ARROW_EXPORT
-std::string UriEncodeHost(const std::string& host);
+std::string UriEncodeHost(std::string_view host);
 
 /// Whether the string is a syntactically valid URI scheme according to RFC 3986.
 ARROW_EXPORT
-bool IsValidUriScheme(const std::string_view s);
+bool IsValidUriScheme(std::string_view s);
 
 /// Create a file uri from a given absolute path
 ARROW_EXPORT
-std::string UriFromAbsolutePath(const std::string& path);
+Result<std::string> UriFromAbsolutePath(std::string_view path);
 
 }  // namespace internal
 }  // namespace arrow

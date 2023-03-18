@@ -25,6 +25,7 @@ package cdata
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"runtime/cgo"
@@ -32,11 +33,11 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/decimal128"
-	"github.com/apache/arrow/go/v10/arrow/internal/arrdata"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/decimal128"
+	"github.com/apache/arrow/go/v12/arrow/internal/arrdata"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -578,6 +579,50 @@ func createTestMapArr() arrow.Array {
 	return bld.NewArray()
 }
 
+func createTestSparseUnion() arrow.Array {
+	return createTestUnionArr(arrow.SparseMode)
+}
+
+func createTestDenseUnion() arrow.Array {
+	return createTestUnionArr(arrow.DenseMode)
+}
+
+func createTestUnionArr(mode arrow.UnionMode) arrow.Array {
+	fields := []arrow.Field{
+		arrow.Field{Name: "u0", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		arrow.Field{Name: "u1", Type: arrow.PrimitiveTypes.Uint8, Nullable: true},
+	}
+	typeCodes := []arrow.UnionTypeCode{5, 10}
+	bld := array.NewBuilder(memory.DefaultAllocator, arrow.UnionOf(mode, fields, typeCodes)).(array.UnionBuilder)
+	defer bld.Release()
+
+	u0Bld := bld.Child(0).(*array.Int32Builder)
+	u1Bld := bld.Child(1).(*array.Uint8Builder)
+
+	bld.Append(5)
+	if mode == arrow.SparseMode {
+		u1Bld.AppendNull()
+	}
+	u0Bld.Append(128)
+	bld.Append(5)
+	if mode == arrow.SparseMode {
+		u1Bld.AppendNull()
+	}
+	u0Bld.Append(256)
+	bld.Append(10)
+	if mode == arrow.SparseMode {
+		u0Bld.AppendNull()
+	}
+	u1Bld.Append(127)
+	bld.Append(10)
+	if mode == arrow.SparseMode {
+		u0Bld.AppendNull()
+	}
+	u1Bld.Append(25)
+
+	return bld.NewArray()
+}
+
 func TestNestedArrays(t *testing.T) {
 	tests := []struct {
 		name string
@@ -588,6 +633,8 @@ func TestNestedArrays(t *testing.T) {
 		{"fixed size list", createTestFixedSizeList},
 		{"struct", createTestStructArr},
 		{"map", createTestMapArr},
+		{"sparse union", createTestSparseUnion},
+		{"dense union", createTestDenseUnion},
 	}
 
 	for _, tt := range tests {
@@ -693,4 +740,161 @@ func TestExportRecordReaderStream(t *testing.T) {
 		i++
 	}
 	assert.EqualValues(t, len(reclist), i)
+}
+
+func TestEmptyListExport(t *testing.T) {
+	bldr := array.NewBuilder(memory.DefaultAllocator, arrow.LargeListOf(arrow.PrimitiveTypes.Int32))
+	defer bldr.Release()
+
+	arr := bldr.NewArray()
+	defer arr.Release()
+
+	var out CArrowArray
+	ExportArrowArray(arr, &out, nil)
+
+	assert.Zero(t, out.length)
+	assert.Zero(t, out.null_count)
+	assert.Zero(t, out.offset)
+	assert.EqualValues(t, 2, out.n_buffers)
+	assert.NotNil(t, out.buffers)
+	assert.EqualValues(t, 1, out.n_children)
+	assert.NotNil(t, out.children)
+}
+
+func TestEmptyDictExport(t *testing.T) {
+	bldr := array.NewBuilder(memory.DefaultAllocator, &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int8, ValueType: arrow.BinaryTypes.String, Ordered: true})
+	defer bldr.Release()
+
+	arr := bldr.NewArray()
+	defer arr.Release()
+
+	var out CArrowArray
+	var sc CArrowSchema
+	ExportArrowArray(arr, &out, &sc)
+
+	assert.EqualValues(t, 'c', *sc.format)
+	assert.NotZero(t, sc.flags&1)
+	assert.Zero(t, sc.n_children)
+	assert.NotNil(t, sc.dictionary)
+	assert.EqualValues(t, 'u', *sc.dictionary.format)
+
+	assert.Zero(t, out.length)
+	assert.Zero(t, out.null_count)
+	assert.Zero(t, out.offset)
+	assert.EqualValues(t, 2, out.n_buffers)
+	assert.Zero(t, out.n_children)
+	assert.Nil(t, out.children)
+	assert.NotNil(t, out.dictionary)
+
+	assert.Zero(t, out.dictionary.length)
+	assert.Zero(t, out.dictionary.null_count)
+	assert.Zero(t, out.dictionary.offset)
+	assert.EqualValues(t, 3, out.dictionary.n_buffers)
+	assert.Zero(t, out.dictionary.n_children)
+	assert.Nil(t, out.dictionary.children)
+	assert.Nil(t, out.dictionary.dictionary)
+}
+
+func TestEmptyStringExport(t *testing.T) {
+	// apache/arrow#33936: regression test
+	bldr := array.NewBuilder(memory.DefaultAllocator, &arrow.StringType{})
+	defer bldr.Release()
+
+	arr := bldr.NewArray()
+	defer arr.Release()
+
+	var out CArrowArray
+	var sc CArrowSchema
+	ExportArrowArray(arr, &out, &sc)
+
+	assert.EqualValues(t, 'u', *sc.format)
+	assert.Zero(t, sc.n_children)
+	assert.Nil(t, sc.dictionary)
+
+	assert.EqualValues(t, 3, out.n_buffers)
+	buffers := (*[3]unsafe.Pointer)(unsafe.Pointer(out.buffers))
+	assert.EqualValues(t, unsafe.Pointer(nil), buffers[0])
+	assert.NotEqualValues(t, unsafe.Pointer(nil), buffers[1])
+	assert.NotEqualValues(t, unsafe.Pointer(nil), buffers[2])
+}
+
+func TestEmptyUnionExport(t *testing.T) {
+	// apache/arrow#33936: regression test
+	bldr := array.NewBuilder(memory.DefaultAllocator, arrow.SparseUnionOf([]arrow.Field{
+		{Name: "child", Type: &arrow.Int64Type{}},
+	}, []arrow.UnionTypeCode{0}))
+	defer bldr.Release()
+
+	arr := bldr.NewArray()
+	defer arr.Release()
+
+	var out CArrowArray
+	var sc CArrowSchema
+	ExportArrowArray(arr, &out, &sc)
+
+	assert.EqualValues(t, 1, sc.n_children)
+	assert.Nil(t, sc.dictionary)
+
+	assert.EqualValues(t, 1, out.n_buffers)
+	buffers := (*[1]unsafe.Pointer)(unsafe.Pointer(out.buffers))
+	assert.NotEqualValues(t, unsafe.Pointer(nil), buffers[0])
+}
+
+func TestRecordReaderExport(t *testing.T) {
+	// Regression test for apache/arrow#33767
+	reclist := arrdata.Records["primitives"]
+	rdr, _ := array.NewRecordReader(reclist[0].Schema(), reclist)
+
+	if err := exportedStreamTest(rdr); err != nil {
+		t.Fatalf("Failed to test exported stream: %#v", err)
+	}
+}
+
+type failingReader struct {
+	opCount int
+}
+
+func (r *failingReader) Retain()  {}
+func (r *failingReader) Release() {}
+func (r *failingReader) Schema() *arrow.Schema {
+	r.opCount -= 1
+	if r.opCount == 0 {
+		return nil
+	}
+	return arrdata.Records["primitives"][0].Schema()
+}
+func (r *failingReader) Next() bool {
+	r.opCount -= 1
+	return r.opCount > 0
+}
+func (r *failingReader) Record() arrow.Record {
+	arrdata.Records["primitives"][0].Retain()
+	return arrdata.Records["primitives"][0]
+}
+func (r *failingReader) Err() error {
+	if r.opCount == 0 {
+		return fmt.Errorf("Expected error message")
+	}
+	return nil
+}
+
+func TestRecordReaderError(t *testing.T) {
+	// Regression test for apache/arrow#33789
+	err := roundTripStreamTest(&failingReader{opCount: 1})
+	if err == nil {
+		t.Fatalf("Expected error but got none")
+	}
+	assert.Contains(t, err.Error(), "Expected error message")
+
+	err = roundTripStreamTest(&failingReader{opCount: 2})
+	if err == nil {
+		t.Fatalf("Expected error but got none")
+	}
+	assert.Contains(t, err.Error(), "Expected error message")
+
+	err = roundTripStreamTest(&failingReader{opCount: 3})
+	if err == nil {
+		t.Fatalf("Expected error but got none")
+	}
+	assert.Contains(t, err.Error(), "Expected error message")
 }

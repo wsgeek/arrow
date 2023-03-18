@@ -17,28 +17,51 @@
 
 arrow_install_all_headers("arrow/compute/exec")
 
-add_arrow_compute_test(expression_test
+add_arrow_compute_test(subtree_test
+                       REQUIRE_ALL_KERNELS
                        PREFIX
                        "arrow-compute"
                        SOURCES
-                       expression_test.cc
                        subtree_test.cc)
 
-add_arrow_compute_test(plan_test PREFIX "arrow-compute")
+add_arrow_compute_test(plan_test
+                       REQUIRE_ALL_KERNELS
+                       PREFIX
+                       "arrow-compute"
+                       SOURCES
+                       plan_test.cc
+                       test_nodes_test.cc
+                       test_nodes.cc)
+add_arrow_compute_test(fetch_node_test
+                       REQUIRE_ALL_KERNELS
+                       PREFIX
+                       "arrow-compute"
+                       SOURCES
+                       fetch_node_test.cc
+                       test_nodes.cc)
 add_arrow_compute_test(hash_join_node_test
+                       REQUIRE_ALL_KERNELS
                        PREFIX
                        "arrow-compute"
                        SOURCES
                        hash_join_node_test.cc
-                       bloom_filter_test.cc
-                       key_hash_test.cc)
-add_arrow_compute_test(asof_join_node_test
+                       bloom_filter_test.cc)
+add_arrow_compute_test(pivot_longer_node_test
                        PREFIX
                        "arrow-compute"
                        SOURCES
-                       asof_join_node_test.cc)
+                       pivot_longer_node_test.cc
+                       test_nodes.cc)
+add_arrow_compute_test(asof_join_node_test
+                       REQUIRE_ALL_KERNELS
+                       PREFIX
+                       "arrow-compute"
+                       SOURCES
+                       asof_join_node_test.cc
+                       test_nodes.cc)
 add_arrow_compute_test(tpch_node_test PREFIX "arrow-compute")
 add_arrow_compute_test(union_node_test PREFIX "arrow-compute")
+add_arrow_compute_test(groupby_test REQUIRE_ALL_KERNELS PREFIX "arrow-compute")
 add_arrow_compute_test(util_test
                        PREFIX
                        "arrow-compute"

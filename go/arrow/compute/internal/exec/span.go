@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build go1.18
+
 package exec
 
 import (
@@ -21,11 +23,11 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/bitutil"
-	"github.com/apache/arrow/go/v10/arrow/memory"
-	"github.com/apache/arrow/go/v10/arrow/scalar"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/bitutil"
+	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow/scalar"
 )
 
 // BufferSpan is a lightweight Buffer holder for ArraySpans that does not
@@ -86,6 +88,21 @@ type ArraySpan struct {
 	Children []ArraySpan
 }
 
+// if an error is encountered, call Release on a preallocated span
+// to ensure it releases any self-allocated buffers, it will
+// not call release on buffers it doesn't own (SelfAlloc != true)
+func (a *ArraySpan) Release() {
+	for _, c := range a.Children {
+		c.Release()
+	}
+
+	for _, b := range a.Buffers {
+		if b.SelfAlloc {
+			b.Owner.Release()
+		}
+	}
+}
+
 func (a *ArraySpan) MayHaveNulls() bool {
 	return atomic.LoadInt64(&a.Nulls) != 0 && a.Buffers[0].Buf != nil
 }
@@ -114,7 +131,7 @@ func (a *ArraySpan) NumBuffers() int { return getNumBuffers(a.Type) }
 // MakeData generates an arrow.ArrayData object for this ArraySpan,
 // properly updating the buffer ref count if necessary.
 func (a *ArraySpan) MakeData() arrow.ArrayData {
-	bufs := make([]*memory.Buffer, a.NumBuffers())
+	var bufs [3]*memory.Buffer
 	for i := range bufs {
 		b := a.GetBuffer(i)
 		bufs[i] = b
@@ -155,7 +172,7 @@ func (a *ArraySpan) MakeData() arrow.ArrayData {
 	}
 
 	if dt.ID() == arrow.DICTIONARY {
-		result := array.NewData(a.Type, length, bufs, nil, nulls, off)
+		result := array.NewData(a.Type, length, bufs[:a.NumBuffers()], nil, nulls, off)
 		dict := a.Dictionary().MakeData()
 		defer dict.Release()
 		result.SetDictionary(dict)
@@ -173,7 +190,7 @@ func (a *ArraySpan) MakeData() arrow.ArrayData {
 			children[i] = d
 		}
 	}
-	return array.NewData(a.Type, length, bufs, children, nulls, off)
+	return array.NewData(a.Type, length, bufs[:a.NumBuffers()], children, nulls, off)
 }
 
 // MakeArray is a convenience function for calling array.MakeFromData(a.MakeData())
@@ -186,14 +203,24 @@ func (a *ArraySpan) MakeArray() arrow.Array {
 // SetSlice updates the offset and length of this ArraySpan to refer to
 // a specific slice of the underlying buffers.
 func (a *ArraySpan) SetSlice(off, length int64) {
-	a.Offset, a.Len = off, length
+	if off == a.Offset && length == a.Len {
+		// don't modify the nulls if the slice is the entire span
+		return
+	}
+
 	if a.Type.ID() != arrow.NULL {
 		if a.Nulls != 0 {
-			a.Nulls = array.UnknownNullCount
+			if a.Nulls == a.Len {
+				a.Nulls = length
+			} else {
+				a.Nulls = array.UnknownNullCount
+			}
 		}
 	} else {
-		a.Nulls = a.Len
+		a.Nulls = length
 	}
+
+	a.Offset, a.Len = off, length
 }
 
 // GetBuffer returns the buffer for the requested index. If this buffer
@@ -410,6 +437,12 @@ func (a *ArraySpan) FillFromScalar(val scalar.Scalar) {
 	}
 }
 
+func (a *ArraySpan) SetDictionary(span *ArraySpan) {
+	a.resizeChildren(1)
+	a.Children[0].Release()
+	a.Children[0] = *span
+}
+
 // TakeOwnership is like SetMembers only this takes ownership of
 // the buffers by calling Retain on them so that the passed in
 // ArrayData can be released without negatively affecting this
@@ -452,18 +485,13 @@ func (a *ArraySpan) TakeOwnership(data arrow.ArrayData) {
 	}
 
 	if typeID == arrow.DICTIONARY {
-		if cap(a.Children) >= 1 {
-			a.Children = a.Children[:1]
-		} else {
-			a.Children = make([]ArraySpan, 1)
+		a.resizeChildren(1)
+		dict := data.Dictionary()
+		if dict != (*array.Data)(nil) {
+			a.Children[0].TakeOwnership(dict)
 		}
-		a.Children[0].TakeOwnership(data.Dictionary())
 	} else {
-		if cap(a.Children) >= len(data.Children()) {
-			a.Children = a.Children[:len(data.Children())]
-		} else {
-			a.Children = make([]ArraySpan, len(data.Children()))
-		}
+		a.resizeChildren(len(data.Children()))
 		for i, c := range data.Children() {
 			a.Children[i].TakeOwnership(c)
 		}
@@ -511,12 +539,11 @@ func (a *ArraySpan) SetMembers(data arrow.ArrayData) {
 	}
 
 	if typeID == arrow.DICTIONARY {
-		if cap(a.Children) >= 1 {
-			a.Children = a.Children[:1]
-		} else {
-			a.Children = make([]ArraySpan, 1)
+		a.resizeChildren(1)
+		dict := data.Dictionary()
+		if dict != (*array.Data)(nil) {
+			a.Children[0].SetMembers(dict)
 		}
-		a.Children[0].SetMembers(data.Dictionary())
 	} else {
 		if cap(a.Children) >= len(data.Children()) {
 			a.Children = a.Children[:len(data.Children())]
@@ -563,6 +590,8 @@ type ExecSpan struct {
 
 func getNumBuffers(dt arrow.DataType) int {
 	switch dt.ID() {
+	case arrow.RUN_END_ENCODED:
+		return 0
 	case arrow.NULL, arrow.STRUCT, arrow.FIXED_SIZE_LIST:
 		return 1
 	case arrow.BINARY, arrow.LARGE_BINARY, arrow.STRING, arrow.LARGE_STRING, arrow.DENSE_UNION:
@@ -590,6 +619,12 @@ func FillZeroLength(dt arrow.DataType, span *ArraySpan) {
 		span.Buffers[i].Buf, span.Buffers[i].Owner = nil, nil
 	}
 
+	if dt.ID() == arrow.DICTIONARY {
+		span.resizeChildren(1)
+		FillZeroLength(dt.(*arrow.DictionaryType).ValueType, &span.Children[0])
+		return
+	}
+
 	nt, ok := dt.(arrow.NestedType)
 	if !ok {
 		if len(span.Children) > 0 {
@@ -598,11 +633,7 @@ func FillZeroLength(dt arrow.DataType, span *ArraySpan) {
 		return
 	}
 
-	if cap(span.Children) >= len(nt.Fields()) {
-		span.Children = span.Children[:len(nt.Fields())]
-	} else {
-		span.Children = make([]ArraySpan, len(nt.Fields()))
-	}
+	span.resizeChildren(len(nt.Fields()))
 	for i, f := range nt.Fields() {
 		FillZeroLength(f.Type, &span.Children[i])
 	}

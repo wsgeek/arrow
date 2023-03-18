@@ -21,8 +21,17 @@ set -ex
 
 arrow_dir=${1}
 build_dir=${2}
+normalized_arch=$(arch)
+case ${normalized_arch} in
+  arm64)
+    normalized_arch=aarch_64
+    ;;
+  i386)
+    normalized_arch=x86_64
+    ;;
+esac
 # The directory where the final binaries will be stored when scripts finish
-dist_dir=${3}
+dist_dir=${3}/${normalized_arch}
 
 echo "=== Clear output directories and leftovers ==="
 # Clear output directories and leftovers
@@ -32,12 +41,14 @@ echo "=== Building Arrow C++ libraries ==="
 install_dir=${build_dir}/cpp-install
 : ${ARROW_BUILD_TESTS:=ON}
 : ${ARROW_DATASET:=ON}
-: ${ARROW_FILESYSTEM:=ON}
+export ARROW_DATASET
 : ${ARROW_GANDIVA:=ON}
+export ARROW_GANDIVA
 : ${ARROW_ORC:=ON}
+export ARROW_ORC
 : ${ARROW_PARQUET:=ON}
-: ${ARROW_PLASMA_JAVA_CLIENT:=ON}
 : ${ARROW_PLASMA:=ON}
+export ARROW_PLASMA
 : ${ARROW_S3:=ON}
 : ${ARROW_USE_CCACHE:=OFF}
 : ${CMAKE_BUILD_TYPE:=Release}
@@ -61,7 +72,6 @@ cmake \
   -DARROW_CSV=${ARROW_DATASET} \
   -DARROW_DATASET=${ARROW_DATASET} \
   -DARROW_DEPENDENCY_USE_SHARED=OFF \
-  -DARROW_FILESYSTEM=${ARROW_FILESYSTEM} \
   -DARROW_GANDIVA=${ARROW_GANDIVA} \
   -DARROW_GANDIVA_STATIC_LIBSTDCPP=ON \
   -DARROW_ORC=${ARROW_ORC} \
@@ -98,7 +108,7 @@ fi
 
 popd
 
-
+export JAVA_JNI_CMAKE_ARGS="-DProtobuf_ROOT=${build_dir}/cpp/protobuf_ep-install"
 ${arrow_dir}/ci/scripts/java_jni_build.sh \
   ${arrow_dir} \
   ${install_dir} \
@@ -115,6 +125,7 @@ echo "=== Checking shared dependencies for libraries ==="
 pushd ${dist_dir}
 archery linking check-dependencies \
   --allow CoreFoundation \
+  --allow Security \
   --allow libSystem \
   --allow libarrow_cdata_jni \
   --allow libarrow_dataset_jni \
@@ -123,6 +134,7 @@ archery linking check-dependencies \
   --allow libcurl \
   --allow libgandiva_jni \
   --allow libncurses \
+  --allow libobjc \
   --allow libplasma_java \
   --allow libz \
   libarrow_cdata_jni.dylib \

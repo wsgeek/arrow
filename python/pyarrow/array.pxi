@@ -222,10 +222,20 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
 
     type = ensure_type(type, allow_none=True)
 
+    extension_type = None
+    if type is not None and type.id == _Type_EXTENSION:
+        extension_type = type
+        type = type.storage_type
+
     if from_pandas is None:
         c_from_pandas = False
     else:
         c_from_pandas = from_pandas
+
+    if isinstance(obj, Array):
+        if type is not None and not obj.type.equals(type):
+            obj = obj.cast(type, safe=safe, memory_pool=memory_pool)
+        return obj
 
     if hasattr(obj, '__arrow_array__'):
         return _handle_arrow_array_protocol(obj, type, mask, size)
@@ -261,21 +271,19 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
 
         if hasattr(values, '__arrow_array__'):
             return _handle_arrow_array_protocol(values, type, mask, size)
+        elif (pandas_api.is_categorical(values) and
+              type is not None and type.id != Type_DICTIONARY):
+            result = _ndarray_to_array(
+                np.asarray(values), mask, type, c_from_pandas, safe, pool
+            )
         elif pandas_api.is_categorical(values):
             if type is not None:
-                if type.id != Type_DICTIONARY:
-                    return _ndarray_to_array(
-                        np.asarray(values), mask, type, c_from_pandas, safe,
-                        pool)
                 index_type = type.index_type
                 value_type = type.value_type
                 if values.ordered != type.ordered:
-                    warnings.warn(
+                    raise ValueError(
                         "The 'ordered' flag of the passed categorical values "
-                        "does not match the 'ordered' of the specified type. "
-                        "Using the flag of the values, but in the future this "
-                        "mismatch will raise a ValueError.",
-                        FutureWarning, stacklevel=2)
+                        "does not match the 'ordered' of the specified type. ")
             else:
                 index_type = None
                 value_type = None
@@ -310,11 +318,15 @@ def array(object obj, type=None, mask=None, size=None, from_pandas=None,
             if pandas_api.have_pandas:
                 values, type = pandas_api.compat.get_datetimetz_type(
                     values, obj.dtype, type)
-            return _ndarray_to_array(values, mask, type, c_from_pandas, safe,
-                                     pool)
+            result = _ndarray_to_array(values, mask, type, c_from_pandas, safe,
+                                       pool)
     else:
         # ConvertPySequence does strict conversion if type is explicitly passed
-        return _sequence_to_array(obj, mask, size, type, pool, c_from_pandas)
+        result = _sequence_to_array(obj, mask, size, type, pool, c_from_pandas)
+
+    if extension_type is not None:
+        result = ExtensionArray.from_storage(extension_type, result)
+    return result
 
 
 def asarray(values, type=None):
@@ -355,7 +367,7 @@ def nulls(size, type=None, MemoryPool memory_pool=None):
         Explicit type for the array. By default use NullType.
     memory_pool : MemoryPool, default None
         Arrow MemoryPool to use for allocations. Uses the default memory
-        pool is not passed.
+        pool if not passed.
 
     Returns
     -------
@@ -405,7 +417,7 @@ def repeat(value, size, MemoryPool memory_pool=None):
         Number of times to repeat the scalar in the output Array.
     memory_pool : MemoryPool, default None
         Arrow MemoryPool to use for allocations. Uses the default memory
-        pool is not passed.
+        pool if not passed.
 
     Returns
     -------
@@ -694,12 +706,12 @@ cdef class _PandasConvertible(_Weakrefable):
         ----------
         memory_pool : MemoryPool, default None
             Arrow MemoryPool to use for allocations. Uses the default memory
-            pool is not passed.
-        strings_to_categorical : bool, default False
-            Encode string (UTF8) and binary types to pandas.Categorical.
+            pool if not passed.
         categories : list, default empty
             List of fields that should be returned as pandas.Categorical. Only
             applies to table-like data structures.
+        strings_to_categorical : bool, default False
+            Encode string (UTF8) and binary types to pandas.Categorical.
         zero_copy_only : bool, default False
             Raise an ArrowException if this function call would require copying
             the underlying data.
@@ -714,7 +726,7 @@ cdef class _PandasConvertible(_Weakrefable):
             If False, all timestamps are converted to datetime64[ns] dtype.
         use_threads : bool, default True
             Whether to parallelize the conversion using multiple threads.
-        deduplicate_objects : bool, default False
+        deduplicate_objects : bool, default True
             Do not create multiple copies Python objects when created, to save
             on memory use. Conversion will be slower.
         ignore_metadata : bool, default False
@@ -897,7 +909,7 @@ cdef class Array(_PandasConvertible):
             result = self.ap.Diff(deref(other.ap))
         return frombytes(result, safe=True)
 
-    def cast(self, object target_type=None, safe=None, options=None):
+    def cast(self, object target_type=None, safe=None, options=None, memory_pool=None):
         """
         Cast array values to another data type
 
@@ -911,12 +923,15 @@ cdef class Array(_PandasConvertible):
             Whether to check for conversion errors such as overflow.
         options : CastOptions, default None
             Additional checks pass by CastOptions
+        memory_pool : MemoryPool, optional
+            memory pool to use for allocations during function execution.
 
         Returns
         -------
         cast : Array
         """
-        return _pc().cast(self, target_type, safe=safe, options=options)
+        return _pc().cast(self, target_type, safe=safe,
+                          options=options, memory_pool=memory_pool)
 
     def view(self, object target_type):
         """
@@ -977,7 +992,7 @@ cdef class Array(_PandasConvertible):
 
         Parameters
         ----------
-        null_encoding
+        null_encoding : str, default "mask"
             How to handle null entries.
 
         Returns
@@ -1246,6 +1261,16 @@ cdef class Array(_PandasConvertible):
         options = _pc().NullOptions(nan_is_null=nan_is_null)
         return _pc().call_function('is_null', [self], options)
 
+    def is_nan(self):
+        """
+        Return BooleanArray indicating the NaN values.
+
+        Returns
+        -------
+        array : boolean Array
+        """
+        return _pc().call_function('is_nan', [self])
+
     def is_valid(self):
         """
         Return BooleanArray indicating the non-null values.
@@ -1258,7 +1283,7 @@ cdef class Array(_PandasConvertible):
 
         Parameters
         ----------
-        fill_value
+        fill_value : any
             The replacement value for null entries.
 
         Returns
@@ -1356,7 +1381,7 @@ cdef class Array(_PandasConvertible):
         ----------
         mask : Array or array-like
             The boolean mask to filter the array with.
-        null_selection_behavior
+        null_selection_behavior : str, default "drop"
             How nulls in the mask should be handled.
 
         Returns
@@ -1391,6 +1416,29 @@ cdef class Array(_PandasConvertible):
             The index of the value in the array (-1 if not found).
         """
         return _pc().index(self, value, start, end, memory_pool=memory_pool)
+
+    def sort(self, order="ascending", **kwargs):
+        """
+        Sort the Array
+
+        Parameters
+        ----------
+        order : str, default "ascending"
+            Which order to sort values in.
+            Accepted values are "ascending", "descending".
+        **kwargs : dict, optional
+            Additional sorting options.
+            As allowed by :class:`SortOptions`
+
+        Returns
+        -------
+        result : Array
+        """
+        indices = _pc().sort_indices(
+            self,
+            options=_pc().SortOptions(sort_keys=[("", order)], **kwargs)
+        )
+        return self.take(indices)
 
     def _to_pandas(self, options, types_mapper=None, **kwargs):
         return _array_like_to_pandas(self, options, types_mapper=types_mapper)
@@ -2542,11 +2590,11 @@ cdef class DictionaryArray(Array):
             The array of values referenced by the indices.
         mask : ndarray or pandas.Series, bool type
             True values indicate that indices are actually null.
+        ordered : bool, default False
+            Set to True if the category values are ordered.
         from_pandas : bool, default False
             If True, the indices should be treated as though they originated in
             a pandas.Categorical (null encoded as -1).
-        ordered : bool, default False
-            Set to True if the category values are ordered.
         safe : bool, default True
             If True, check that the dictionary indices are in range.
         memory_pool : MemoryPool, default None
@@ -2632,6 +2680,39 @@ cdef class StructArray(Array):
         else:
             raise TypeError('Expected integer or string index')
 
+        return pyarrow_wrap_array(child)
+
+    def _flattened_field(self, index, MemoryPool memory_pool=None):
+        """
+        Retrieves the child array belonging to field,
+        accounting for the parent array null bitmap.
+
+        Parameters
+        ----------
+        index : Union[int, str]
+            Index / position or name of the field.
+        memory_pool : MemoryPool, default None
+            For memory allocations, if required, otherwise use default pool.
+
+        Returns
+        -------
+        result : Array
+        """
+        cdef:
+            CStructArray* arr = <CStructArray*> self.ap
+            shared_ptr[CArray] child
+            CMemoryPool* pool = maybe_unbox_memory_pool(memory_pool)
+
+        if isinstance(index, (bytes, str)):
+            int_index = self.type.get_field_index(index)
+            if int_index < 0:
+                raise KeyError(index)
+        elif isinstance(index, int):
+            int_index = _normalize_index(index, self.ap.num_fields())
+        else:
+            raise TypeError('Expected integer or string index')
+
+        child = GetResultValue(arr.GetFlattenedField(int_index, pool))
         return pyarrow_wrap_array(child)
 
     def flatten(self, MemoryPool memory_pool=None):
@@ -2722,7 +2803,10 @@ cdef class StructArray(Array):
         if (c_arrays.size() == 0 and c_names.size() == 0 and
                 c_fields.size() == 0):
             # The C++ side doesn't allow this
-            return array([], struct([]))
+            if mask is None:
+                return array([], struct([]))
+            else:
+                return array([{}] * len(mask), struct([]), mask=mask)
 
         if names is not None:
             # XXX Cannot pass "nullptr" for a shared_ptr<T> argument:
@@ -2735,6 +2819,36 @@ cdef class StructArray(Array):
         cdef Array result = pyarrow_wrap_array(GetResultValue(c_result))
         result.validate()
         return result
+
+    def sort(self, order="ascending", by=None, **kwargs):
+        """
+        Sort the StructArray
+
+        Parameters
+        ----------
+        order : str, default "ascending"
+            Which order to sort values in.
+            Accepted values are "ascending", "descending".
+        by : str or None, default None
+            If to sort the array by one of its fields
+            or by the whole array.
+        **kwargs : dict, optional
+            Additional sorting options.
+            As allowed by :class:`SortOptions`
+
+        Returns
+        -------
+        result : StructArray
+        """
+        if by is not None:
+            tosort = self._flattened_field(by)
+        else:
+            tosort = self
+        indices = _pc().sort_indices(
+            tosort,
+            options=_pc().SortOptions(sort_keys=[("", order)], **kwargs)
+        )
+        return self.take(indices)
 
 
 cdef class ExtensionArray(Array):

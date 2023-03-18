@@ -25,11 +25,11 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/bitutil"
-	"github.com/apache/arrow/go/v10/arrow/decimal256"
-	"github.com/apache/arrow/go/v10/arrow/internal/debug"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/bitutil"
+	"github.com/apache/arrow/go/v12/arrow/decimal256"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -80,7 +80,7 @@ func (a *Decimal256) setData(data *Data) {
 	}
 }
 
-func (a *Decimal256) getOneForMarshal(i int) interface{} {
+func (a *Decimal256) GetOneForMarshal(i int) interface{} {
 	if a.IsNull(i) {
 		return nil
 	}
@@ -94,7 +94,7 @@ func (a *Decimal256) getOneForMarshal(i int) interface{} {
 func (a *Decimal256) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
-		vals[i] = a.getOneForMarshal(i)
+		vals[i] = a.GetOneForMarshal(i)
 	}
 	return json.Marshal(vals)
 }
@@ -259,31 +259,31 @@ func (b *Decimal256Builder) newData() (data *Data) {
 	return
 }
 
-func (b *Decimal256Builder) unmarshalOne(dec *json.Decoder) error {
+func (b *Decimal256Builder) UnmarshalOne(dec *json.Decoder) error {
 	t, err := dec.Token()
 	if err != nil {
 		return err
 	}
 
-	var out *big.Float
-
 	switch v := t.(type) {
 	case float64:
-		out = big.NewFloat(v)
+		val, err := decimal256.FromFloat64(v, b.dtype.Precision, b.dtype.Scale)
+		if err != nil {
+			return err
+		}
+		b.Append(val)
 	case string:
-		// there's no strong rationale for using ToNearestAway, it's just
-		// what got me the closest equivalent values with the values
-		// that I tested with, and there isn't a good way to push
-		// an option all the way down here to control it.
-		out, _, err = big.ParseFloat(v, 10, 255, big.ToNearestAway)
+		out, err := decimal256.FromString(v, b.dtype.Precision, b.dtype.Scale)
 		if err != nil {
 			return err
 		}
+		b.Append(out)
 	case json.Number:
-		out, _, err = big.ParseFloat(v.String(), 10, 255, big.ToNearestAway)
+		out, err := decimal256.FromString(v.String(), b.dtype.Precision, b.dtype.Scale)
 		if err != nil {
 			return err
 		}
+		b.Append(out)
 	case nil:
 		b.AppendNull()
 		return nil
@@ -295,14 +295,12 @@ func (b *Decimal256Builder) unmarshalOne(dec *json.Decoder) error {
 		}
 	}
 
-	val, _ := out.Mul(out, big.NewFloat(math.Pow10(int(b.dtype.Scale)))).Int(nil)
-	b.Append(decimal256.FromBigInt(val))
 	return nil
 }
 
-func (b *Decimal256Builder) unmarshal(dec *json.Decoder) error {
+func (b *Decimal256Builder) Unmarshal(dec *json.Decoder) error {
 	for dec.More() {
-		if err := b.unmarshalOne(dec); err != nil {
+		if err := b.UnmarshalOne(dec); err != nil {
 			return err
 		}
 	}
@@ -324,7 +322,7 @@ func (b *Decimal256Builder) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("arrow/array: decimal256 builder must unpack from json array, found %s", delim)
 	}
 
-	return b.unmarshal(dec)
+	return b.Unmarshal(dec)
 }
 
 var (

@@ -18,9 +18,10 @@
 #include "arrow/compute/api_vector.h"
 #include "arrow/compute/exec.h"
 #include "arrow/compute/exec/exec_plan.h"
-#include "arrow/compute/exec/expression.h"
 #include "arrow/compute/exec/map_node.h"
 #include "arrow/compute/exec/options.h"
+#include "arrow/compute/exec/query_context.h"
+#include "arrow/compute/expression.h"
 #include "arrow/datum.h"
 #include "arrow/result.h"
 #include "arrow/util/checked_cast.h"
@@ -38,8 +39,8 @@ namespace {
 class FilterNode : public MapNode {
  public:
   FilterNode(ExecPlan* plan, std::vector<ExecNode*> inputs,
-             std::shared_ptr<Schema> output_schema, Expression filter, bool async_mode)
-      : MapNode(plan, std::move(inputs), std::move(output_schema), async_mode),
+             std::shared_ptr<Schema> output_schema, Expression filter)
+      : MapNode(plan, std::move(inputs), std::move(output_schema)),
         filter_(std::move(filter)) {}
 
   static Result<ExecNode*> Make(ExecPlan* plan, std::vector<ExecNode*> inputs,
@@ -51,8 +52,9 @@ class FilterNode : public MapNode {
 
     auto filter_expression = filter_options.filter_expression;
     if (!filter_expression.IsBound()) {
-      ARROW_ASSIGN_OR_RAISE(filter_expression,
-                            filter_expression.Bind(*schema, plan->exec_context()));
+      ARROW_ASSIGN_OR_RAISE(
+          filter_expression,
+          filter_expression.Bind(*schema, plan->query_context()->exec_context()));
     }
 
     if (filter_expression.type()->id() != Type::BOOL) {
@@ -61,60 +63,43 @@ class FilterNode : public MapNode {
                                filter_expression.type()->ToString());
     }
     return plan->EmplaceNode<FilterNode>(plan, std::move(inputs), std::move(schema),
-                                         std::move(filter_expression),
-                                         filter_options.async_mode);
+                                         std::move(filter_expression));
   }
 
   const char* kind_name() const override { return "FilterNode"; }
 
-  Result<ExecBatch> DoFilter(const ExecBatch& target) {
+  Result<ExecBatch> ProcessBatch(ExecBatch batch) override {
     ARROW_ASSIGN_OR_RAISE(Expression simplified_filter,
-                          SimplifyWithGuarantee(filter_, target.guarantee));
+                          SimplifyWithGuarantee(filter_, batch.guarantee));
 
     util::tracing::Span span;
     START_COMPUTE_SPAN(span, "Filter",
                        {{"filter.expression", ToStringExtra()},
                         {"filter.expression.simplified", simplified_filter.ToString()},
-                        {"filter.length", target.length}});
+                        {"filter.length", batch.length}});
 
-    ARROW_ASSIGN_OR_RAISE(Datum mask, ExecuteScalarExpression(simplified_filter, target,
-                                                              plan()->exec_context()));
+    ARROW_ASSIGN_OR_RAISE(
+        Datum mask, ExecuteScalarExpression(simplified_filter, batch,
+                                            plan()->query_context()->exec_context()));
 
     if (mask.is_scalar()) {
       const auto& mask_scalar = mask.scalar_as<BooleanScalar>();
       if (mask_scalar.is_valid && mask_scalar.value) {
-        return target;
+        return batch;
       }
-      return target.Slice(0, 0);
+      return batch.Slice(0, 0);
     }
 
     // if the values are all scalar then the mask must also be
-    DCHECK(!std::all_of(target.values.begin(), target.values.end(),
+    DCHECK(!std::all_of(batch.values.begin(), batch.values.end(),
                         [](const Datum& value) { return value.is_scalar(); }));
 
-    auto values = target.values;
+    auto values = batch.values;
     for (auto& value : values) {
       if (value.is_scalar()) continue;
       ARROW_ASSIGN_OR_RAISE(value, Filter(value, mask, FilterOptions::Defaults()));
     }
     return ExecBatch::Make(std::move(values));
-  }
-
-  void InputReceived(ExecNode* input, ExecBatch batch) override {
-    EVENT(span_, "InputReceived", {{"batch.length", batch.length}});
-    DCHECK_EQ(input, inputs_[0]);
-    auto func = [this](ExecBatch batch) {
-      util::tracing::Span span;
-      START_COMPUTE_SPAN_WITH_PARENT(span, span_, "InputReceived",
-                                     {{"filter", ToStringExtra()},
-                                      {"node.label", label()},
-                                      {"batch.length", batch.length}});
-      auto result = DoFilter(std::move(batch));
-      MARK_SPAN(span, result.status());
-      END_SPAN(span);
-      return result;
-    };
-    this->SubmitTask(std::move(func), std::move(batch));
   }
 
  protected:

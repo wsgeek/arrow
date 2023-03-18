@@ -29,6 +29,7 @@ User Guide
    datatypes
    tables
    compute
+   gandiva
    streaming_execution
    io
    ipc
@@ -40,4 +41,5 @@ User Guide
    flight
    gdb
    threading
+   opentelemetry
    env_vars

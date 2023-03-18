@@ -26,10 +26,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/csv"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/csv"
+	"github.com/apache/arrow/go/v12/arrow/decimal128"
+	"github.com/apache/arrow/go/v12/arrow/decimal256"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -161,6 +163,61 @@ func Example_withChunk() {
 	// rec[3]["str"]: ["str-9"]
 }
 
+func TestCSVReadInvalidFields(t *testing.T) {
+  tests := []struct {
+		Name string
+		Data string
+		Fields []arrow.Field
+		ExpectedError bool
+	}{
+		{
+			Name: "ValidListInt64",
+			Data: "{}",
+			Fields: []arrow.Field{
+				{Name: "list(i64)", Type: arrow.ListOf(arrow.PrimitiveTypes.Int64)},
+			},
+			ExpectedError: false,
+		},
+		{
+			Name: "InvalidListInt64T1",
+			Data: "{",
+			Fields: []arrow.Field{
+				{Name: "list(i64)", Type: arrow.ListOf(arrow.PrimitiveTypes.Int64)},
+			},
+			ExpectedError: true,
+		},
+		{
+			Name: "InvalidListInt64T2",
+			Data: "}",
+			Fields: []arrow.Field{
+				{Name: "list(i64)", Type: arrow.ListOf(arrow.PrimitiveTypes.Int64)},
+			},
+			ExpectedError: true,
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.Name, func(t *testing.T) {
+			f := bytes.NewBufferString(tc.Data)
+			schema := arrow.NewSchema(tc.Fields, nil)
+		
+			r := csv.NewReader(
+				f, schema,
+				csv.WithComma(','),
+			)
+			defer r.Release()
+			for r.Next() {}
+			parseErr := r.Err()
+			if tc.ExpectedError && parseErr == nil {
+				t.Fatal("Expected error, but none found")
+			}
+			if !tc.ExpectedError && parseErr != nil {
+				t.Fatalf("Not expecting error, but got %v", parseErr)
+			}
+		})
+	}
+}
+
 func TestCSVReaderParseError(t *testing.T) {
 	f := bytes.NewBufferString(`## a simple set of data: int64;float64;string
 0;0;str-0
@@ -276,6 +333,8 @@ func testCSVReader(t *testing.T, filepath string, withHeader bool) {
 			{Name: "f64", Type: arrow.PrimitiveTypes.Float64},
 			{Name: "str", Type: arrow.BinaryTypes.String},
 			{Name: "ts", Type: arrow.FixedWidthTypes.Timestamp_ms},
+			{Name: "list(i64)", Type: arrow.ListOf(arrow.PrimitiveTypes.Int64)},
+			{Name: "binary", Type: arrow.BinaryTypes.Binary},
 		},
 		nil,
 	)
@@ -295,7 +354,6 @@ func testCSVReader(t *testing.T, filepath string, withHeader bool) {
 	}
 
 	out := new(bytes.Buffer)
-
 	n := 0
 	for r.Next() {
 		rec := r.Record()
@@ -304,7 +362,9 @@ func testCSVReader(t *testing.T, filepath string, withHeader bool) {
 		}
 		n++
 	}
-
+	if err := r.Err(); err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
 	if got, want := n, 3; got != want {
 		t.Fatalf("invalid number of rows: got=%d, want=%d", got, want)
 	}
@@ -322,6 +382,8 @@ rec[0]["f32"]: [1.1]
 rec[0]["f64"]: [1.1]
 rec[0]["str"]: ["str-1"]
 rec[0]["ts"]: [1652054461000]
+rec[0]["list(i64)"]: [[1 2 3]]
+rec[0]["binary"]: ["\x00\x01\x02"]
 rec[1]["bool"]: [false]
 rec[1]["i8"]: [-2]
 rec[1]["i16"]: [-2]
@@ -335,6 +397,8 @@ rec[1]["f32"]: [2.2]
 rec[1]["f64"]: [2.2]
 rec[1]["str"]: ["str-2"]
 rec[1]["ts"]: [1652140799000]
+rec[1]["list(i64)"]: [[]]
+rec[1]["binary"]: [""]
 rec[2]["bool"]: [(null)]
 rec[2]["i8"]: [(null)]
 rec[2]["i16"]: [(null)]
@@ -348,11 +412,11 @@ rec[2]["f32"]: [(null)]
 rec[2]["f64"]: [(null)]
 rec[2]["str"]: [(null)]
 rec[2]["ts"]: [(null)]
+rec[2]["list(i64)"]: [(null)]
+rec[2]["binary"]: [(null)]
 `
-
-	if got, want := out.String(), want; got != want {
-		t.Fatalf("invalid output:\ngot= %s\nwant=%s\n", got, want)
-	}
+	got, want := out.String(), want
+	require.Equal(t, want, got)
 
 	if r.Err() != nil {
 		t.Fatalf("unexpected error: %v", r.Err())
@@ -623,6 +687,48 @@ rec[0]["str"]: ["str-0" "str-1" "str-2" "str-3" "str-4" "str-5" "str-6" "str-7" 
 	}
 }
 
+func TestReadCSVDecimalCols(t *testing.T) {
+	data := `dec128,dec256
+12.3,0.00123
+1.23e-8,-1.23e-3
+-1.23E+3,1.23e+5
+`
+
+	r := csv.NewReader(strings.NewReader(data), arrow.NewSchema([]arrow.Field{
+		{Name: "dec128", Type: &arrow.Decimal128Type{Precision: 14, Scale: 10}, Nullable: true},
+		{Name: "dec256", Type: &arrow.Decimal256Type{Precision: 11, Scale: 5}, Nullable: true},
+	}, nil), csv.WithChunk(-1), csv.WithHeader(true), csv.WithComma(','), csv.WithNullReader(true, "null", "#NA"))
+	defer r.Release()
+
+	assert.True(t, r.Next())
+	rec := r.Record()
+	rec.Retain()
+	assert.False(t, r.Next())
+	defer rec.Release()
+
+	if r.Err() != nil {
+		log.Fatal(r.Err())
+	}
+
+	bldr := array.NewRecordBuilder(memory.DefaultAllocator, r.Schema())
+	defer bldr.Release()
+
+	dec128Bldr := bldr.Field(0).(*array.Decimal128Builder)
+	dec128Bldr.Append(decimal128.New(0, 123000000000))
+	dec128Bldr.Append(decimal128.New(0, 123))
+	dec128Bldr.Append(decimal128.FromI64(-12300000000000))
+
+	dec256Bldr := bldr.Field(1).(*array.Decimal256Builder)
+	dec256Bldr.Append(decimal256.FromU64(123))
+	dec256Bldr.Append(decimal256.FromI64(-123))
+	dec256Bldr.Append(decimal256.FromU64(12300000000))
+
+	exRec := bldr.NewRecord()
+	defer exRec.Release()
+
+	assert.Truef(t, array.RecordEqual(exRec, rec), "expected: %s\nactual: %s", exRec, rec)
+}
+
 func BenchmarkRead(b *testing.B) {
 	gen := func(rows, cols int) []byte {
 		buf := new(bytes.Buffer)
@@ -638,7 +744,7 @@ func BenchmarkRead(b *testing.B) {
 		return buf.Bytes()
 	}
 
-	for _, rows := range []int{10, 1e2, 1e3, 1e4, 1e5} {
+	for _, rows := range []int{10, 1e2, 1e3, 1e4} {
 		for _, cols := range []int{1, 10, 100, 1000} {
 			raw := gen(rows, cols)
 			for _, chunks := range []int{-1, 0, 10, 100, 1000} {

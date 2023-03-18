@@ -24,7 +24,13 @@ if(ARROW_COMPUTE)
 endif()
 
 if(ARROW_SUBSTRAIT)
-  add_arrow_example(engine_substrait_consumption EXTRA_LINK_LIBS arrow_substrait_shared)
+  if(ARROW_BUILD_SHARED)
+    set(ENGINE_SUBSTRAIT_CONSUMPTION_LINK_LIBS arrow_substrait_shared)
+  else()
+    set(ENGINE_SUBSTRAIT_CONSUMPTION_LINK_LIBS arrow_substrait_static)
+  endif()
+  add_arrow_example(engine_substrait_consumption EXTRA_LINK_LIBS
+                    ${ENGINE_SUBSTRAIT_CONSUMPTION_LINK_LIBS})
 endif()
 
 if(ARROW_COMPUTE AND ARROW_CSV)
@@ -34,7 +40,7 @@ endif()
 if(ARROW_FLIGHT)
   # Static gRPC means we cannot linked to shared Arrow, since then
   # we'll violate ODR for gRPC symbols
-  if(ARROW_GRPC_USE_SHARED)
+  if(ARROW_BUILD_SHARED AND ARROW_GRPC_USE_SHARED)
     set(FLIGHT_EXAMPLES_LINK_LIBS arrow_flight_shared)
     if(APPLE)
       set(GRPC_REFLECTION_LINK_LIBS gRPC::grpc++_reflection)
@@ -100,7 +106,7 @@ if(ARROW_FLIGHT)
                     "${CMAKE_CURRENT_BINARY_DIR}/helloworld.grpc.pb.cc")
 
   if(ARROW_FLIGHT_SQL)
-    if(ARROW_GRPC_USE_SHARED)
+    if(ARROW_BUILD_SHARED AND ARROW_GRPC_USE_SHARED)
       set(FLIGHT_SQL_EXAMPLES_LINK_LIBS arrow_flight_sql_shared)
     else()
       set(FLIGHT_SQL_EXAMPLES_LINK_LIBS arrow_flight_sql_static)
@@ -115,6 +121,14 @@ if(ARROW_FLIGHT)
                       gRPC::grpc++
                       ${ARROW_PROTOBUF_LIBPROTOBUF}
                       ${GFLAGS_LIBRARIES})
+  endif()
+endif()
+
+if(ARROW_PARQUET)
+  if(ARROW_BUILD_SHARED)
+    add_arrow_example(parquet_read_write EXTRA_LINK_LIBS parquet_shared)
+  else()
+    add_arrow_example(parquet_read_write EXTRA_LINK_LIBS parquet_static)
   endif()
 endif()
 
@@ -137,8 +151,10 @@ if(ARROW_PARQUET AND ARROW_DATASET)
                     ${DATASET_EXAMPLES_LINK_LIBS})
   add_dependencies(execution-plan-documentation-examples parquet)
 
-  add_arrow_example(join_example EXTRA_LINK_LIBS ${DATASET_EXAMPLES_LINK_LIBS})
-  add_dependencies(join-example parquet)
+  if(ARROW_CSV)
+    add_arrow_example(join_example EXTRA_LINK_LIBS ${DATASET_EXAMPLES_LINK_LIBS})
+    add_dependencies(join-example parquet)
+  endif()
 
   add_arrow_example(udf_example)
 
@@ -154,4 +170,13 @@ if(ARROW_PARQUET AND ARROW_DATASET)
     add_dependencies(dataset-skyhook-scan-example parquet)
   endif()
 
+endif()
+
+if(ARROW_GANDIVA)
+  if(ARROW_BUILD_SHARED)
+    set(GANDIVA_EXAMPLE_LINK_LIBS gandiva_shared)
+  else()
+    set(GANDIVA_EXAMPLE_LINK_LIBS gandiva_static)
+  endif()
+  add_arrow_example(gandiva_example EXTRA_LINK_LIBS ${GANDIVA_EXAMPLE_LINK_LIBS})
 endif()

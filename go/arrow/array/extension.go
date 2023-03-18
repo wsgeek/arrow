@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -134,8 +134,8 @@ func (e *ExtensionArrayBase) String() string {
 	return fmt.Sprintf("(%s)%s", e.data.dtype, e.storage)
 }
 
-func (e *ExtensionArrayBase) getOneForMarshal(i int) interface{} {
-	return e.storage.getOneForMarshal(i)
+func (e *ExtensionArrayBase) GetOneForMarshal(i int) interface{} {
+	return e.storage.GetOneForMarshal(i)
 }
 
 func (e *ExtensionArrayBase) MarshalJSON() ([]byte, error) {

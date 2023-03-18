@@ -22,12 +22,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/flight"
-	"github.com/apache/arrow/go/v10/internal/utils"
-	"github.com/apache/arrow/go/v10/parquet"
-	"github.com/apache/arrow/go/v10/parquet/file"
-	"github.com/apache/arrow/go/v10/parquet/metadata"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/flight"
+	"github.com/apache/arrow/go/v12/internal/utils"
+	"github.com/apache/arrow/go/v12/parquet"
+	"github.com/apache/arrow/go/v12/parquet/file"
+	"github.com/apache/arrow/go/v12/parquet/metadata"
 	"golang.org/x/xerrors"
 )
 
@@ -263,6 +263,13 @@ func (fw *FileWriter) Close() error {
 				return err
 			}
 		}
+
+		writeCtx := arrowCtxFromContext(fw.ctx)
+		if writeCtx.dataBuffer != nil {
+			writeCtx.dataBuffer.Release()
+			writeCtx.dataBuffer = nil
+		}
+
 		return fw.wr.Close()
 	}
 	return nil

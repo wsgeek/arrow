@@ -53,6 +53,7 @@ On Ubuntu/Debian you can install the requirements with:
 
    sudo apt-get install \
         build-essential \
+        ninja-build \
         cmake
 
 On Alpine Linux:
@@ -64,6 +65,7 @@ On Alpine Linux:
            cmake \
            g++ \
            gcc \
+           ninja \
            make
            
 On Fedora Linux:
@@ -74,6 +76,7 @@ On Fedora Linux:
         cmake \
         gcc \
         gcc-c++ \
+        ninja-build \
         make
 
 On Arch Linux:
@@ -82,6 +85,7 @@ On Arch Linux:
 
    sudo pacman -S --needed \
         base-devel \
+        ninja \
         cmake
 
 On macOS, you can use `Homebrew <https://brew.sh/>`_:
@@ -298,7 +302,7 @@ Unity builds
 ~~~~~~~~~~~~
 
 The CMake
-`unity builds <https://cmake.org/cmake/help/latest/prop_tgt/UNITY_BUILD.html/>`_
+`unity builds <https://cmake.org/cmake/help/latest/prop_tgt/UNITY_BUILD.html>`_
 option can make full builds significantly faster, but it also increases the
 memory requirements.  Consider turning it on (using ``-DCMAKE_UNITY_BUILD=ON``)
 if memory consumption is not an issue.
@@ -338,11 +342,11 @@ boolean flags to ``cmake``.
 * ``-DPARQUET_REQUIRE_ENCRYPTION=ON``: Parquet Modular Encryption
 * ``-DARROW_PLASMA=ON``: Plasma Shared Memory Object Store
 * ``-DARROW_PLASMA_JAVA_CLIENT=ON``: Build Java client for Plasma
-* ``-DARROW_PYTHON=ON``: Arrow Python C++ integration library (required for
-  building pyarrow). This library must be built against the same Python version
-  for which you are building pyarrow. NumPy must also be installed. Enabling
-  this option also enables ``ARROW_COMPUTE``, ``ARROW_CSV``, ``ARROW_DATASET``,
-  ``ARROW_FILESYSTEM``, ``ARROW_HDFS``, and ``ARROW_JSON``.
+* ``-DARROW_PYTHON=ON``: This option is deprecated since 10.0.0. This
+  will be removed in a future release. Use CMake presets instead. Or
+  you can enable ``ARROW_COMPUTE``, ``ARROW_CSV``, ``ARROW_DATASET``,
+  ``ARROW_FILESYSTEM``, ``ARROW_HDFS``, and ``ARROW_JSON`` directly
+  instead.
 * ``-DARROW_S3=ON``: Support for Amazon S3-compatible filesystems
 * ``-DARROW_WITH_RE2=ON`` Build with support for regular expressions using the re2 
   library, on by default and used when ``ARROW_COMPUTE`` or ``ARROW_GANDIVA`` is ``ON``
@@ -364,6 +368,9 @@ Some features of the core Arrow shared library can be switched off for improved
 build times if they are not required for your application:
 
 * ``-DARROW_IPC=ON``: build the IPC extensions
+
+.. warning::
+   Plasma is deprecated as of Arrow 10.0.0, and will be removed in 12.0.0 or so.
 
 Optional Targets
 ~~~~~~~~~~~~~~~~
@@ -481,7 +488,7 @@ from source, set
 
 This variable is unfortunately case-sensitive; the name used for each package
 is listed above, but the most up-to-date listing can be found in
-`cpp/cmake_modules/ThirdpartyToolchain.cmake <https://github.com/apache/arrow/blob/master/cpp/cmake_modules/ThirdpartyToolchain.cmake>`_.
+`cpp/cmake_modules/ThirdpartyToolchain.cmake <https://github.com/apache/arrow/blob/main/cpp/cmake_modules/ThirdpartyToolchain.cmake>`_.
 
 Bundled Dependency Versions
 ---------------------------
@@ -548,7 +555,7 @@ If you are using CMake, the bundled dependencies will automatically be included
 when linking if you use the ``arrow_static`` CMake target. In other build
 systems, you may need to explicitly link to the dependency bundle. We created
 an `example CMake-based build configuration
-<https://github.com/apache/arrow/tree/master/cpp/examples/minimal_build>`_ to
+<https://github.com/apache/arrow/tree/main/cpp/examples/minimal_build>`_ to
 show you a working example.
 
 On Linux and macOS, if your application does not link to the ``pthread``

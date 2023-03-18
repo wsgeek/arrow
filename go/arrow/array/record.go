@@ -22,9 +22,9 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/internal/debug"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -37,6 +37,7 @@ type RecordReader interface {
 
 	Next() bool
 	Record() arrow.Record
+	Err() error
 }
 
 // simpleRecords is a simple iterator over a collection of records.
@@ -107,6 +108,7 @@ func (rs *simpleRecords) Next() bool {
 	rs.recs = rs.recs[1:]
 	return true
 }
+func (rs *simpleRecords) Err() error { return nil }
 
 // simpleRecord is a basic, non-lazy in-memory record batch.
 type simpleRecord struct {
@@ -357,14 +359,14 @@ func (b *RecordBuilder) UnmarshalJSON(data []byte) error {
 
 		indices := b.schema.FieldIndices(key)
 		if len(indices) == 0 {
-			_, err = dec.Token()
-			if err != nil {
+			var extra interface{}
+			if err := dec.Decode(&extra); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if err := b.fields[indices[0]].unmarshalOne(dec); err != nil {
+		if err := b.fields[indices[0]].UnmarshalOne(dec); err != nil {
 			return err
 		}
 	}

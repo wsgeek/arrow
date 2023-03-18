@@ -371,7 +371,7 @@ class [[nodiscard]] Result : public util::EqualityComparable<Result<T>> {
     if (ok()) {
       return MoveValueUnsafe();
     }
-    return generate_alternative();
+    return std::forward<G>(generate_alternative)();
   }
 
   /// Apply a function to the internally stored value to produce a new result or propagate
@@ -420,11 +420,7 @@ class [[nodiscard]] Result : public util::EqualityComparable<Result<T>> {
 
   constexpr const T& ValueUnsafe() const& { return *storage_.get(); }
 
-#if __cpp_constexpr >= 201304L  // non-const constexpr
   constexpr T& ValueUnsafe() & { return *storage_.get(); }
-#else
-  T& ValueUnsafe() & { return *storage_.get(); }
-#endif
 
   T ValueUnsafe() && { return MoveValueUnsafe(); }
 

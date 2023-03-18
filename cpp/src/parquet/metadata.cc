@@ -33,7 +33,6 @@
 #include "parquet/exception.h"
 #include "parquet/schema.h"
 #include "parquet/schema_internal.h"
-#include "parquet/statistics.h"
 #include "parquet/thrift_internal.h"
 
 namespace parquet {
@@ -164,7 +163,7 @@ std::unique_ptr<ColumnCryptoMetaData> ColumnCryptoMetaData::Make(
 }
 
 ColumnCryptoMetaData::ColumnCryptoMetaData(const uint8_t* metadata)
-    : impl_(new ColumnCryptoMetaDataImpl(
+    : impl_(std::make_unique<ColumnCryptoMetaDataImpl>(
           reinterpret_cast<const format::ColumnCryptoMetaData*>(metadata))) {}
 
 ColumnCryptoMetaData::~ColumnCryptoMetaData() = default;
@@ -279,6 +278,13 @@ class ColumnChunkMetaData::ColumnChunkMetaDataImpl {
 
   const std::vector<PageEncodingStats>& encoding_stats() const { return encoding_stats_; }
 
+  inline std::optional<int64_t> bloom_filter_offset() const {
+    if (column_metadata_->__isset.bloom_filter_offset) {
+      return column_metadata_->bloom_filter_offset;
+    }
+    return std::nullopt;
+  }
+
   inline bool has_dictionary_page() const {
     return column_metadata_->__isset.dictionary_page_offset;
   }
@@ -310,6 +316,20 @@ class ColumnChunkMetaData::ColumnChunkMetaDataImpl {
     } else {
       return nullptr;
     }
+  }
+
+  std::optional<IndexLocation> GetColumnIndexLocation() const {
+    if (column_->__isset.column_index_offset && column_->__isset.column_index_length) {
+      return IndexLocation{column_->column_index_offset, column_->column_index_length};
+    }
+    return std::nullopt;
+  }
+
+  std::optional<IndexLocation> GetOffsetIndexLocation() const {
+    if (column_->__isset.offset_index_offset && column_->__isset.offset_index_length) {
+      return IndexLocation{column_->offset_index_offset, column_->offset_index_length};
+    }
+    return std::nullopt;
   }
 
  private:
@@ -374,6 +394,10 @@ std::shared_ptr<Statistics> ColumnChunkMetaData::statistics() const {
 
 bool ColumnChunkMetaData::is_stats_set() const { return impl_->is_stats_set(); }
 
+std::optional<int64_t> ColumnChunkMetaData::bloom_filter_offset() const {
+  return impl_->bloom_filter_offset();
+}
+
 bool ColumnChunkMetaData::has_dictionary_page() const {
   return impl_->has_dictionary_page();
 }
@@ -420,6 +444,14 @@ std::unique_ptr<ColumnCryptoMetaData> ColumnChunkMetaData::crypto_metadata() con
   return impl_->crypto_metadata();
 }
 
+std::optional<IndexLocation> ColumnChunkMetaData::GetColumnIndexLocation() const {
+  return impl_->GetColumnIndexLocation();
+}
+
+std::optional<IndexLocation> ColumnChunkMetaData::GetOffsetIndexLocation() const {
+  return impl_->GetOffsetIndexLocation();
+}
+
 bool ColumnChunkMetaData::Equals(const ColumnChunkMetaData& other) const {
   return impl_->Equals(*other.impl_);
 }
@@ -436,7 +468,13 @@ class RowGroupMetaData::RowGroupMetaDataImpl {
         schema_(schema),
         properties_(properties),
         writer_version_(writer_version),
-        file_decryptor_(std::move(file_decryptor)) {}
+        file_decryptor_(std::move(file_decryptor)) {
+    if (ARROW_PREDICT_FALSE(row_group_->columns.size() >
+                            static_cast<size_t>(std::numeric_limits<int>::max()))) {
+      throw ParquetException("Row group had too many columns: ",
+                             row_group_->columns.size());
+    }
+  }
 
   bool Equals(const RowGroupMetaDataImpl& other) const {
     return *row_group_ == *other.row_group_;
@@ -457,10 +495,10 @@ class RowGroupMetaData::RowGroupMetaDataImpl {
   inline const SchemaDescriptor* schema() const { return schema_; }
 
   std::unique_ptr<ColumnChunkMetaData> ColumnChunk(int i) {
-    if (i < num_columns()) {
+    if (i >= 0 && i < num_columns()) {
       return ColumnChunkMetaData::Make(&row_group_->columns[i], schema_->Column(i),
                                        properties_, writer_version_, row_group_->ordinal,
-                                       static_cast<int16_t>(i), file_decryptor_);
+                                       i, file_decryptor_);
     }
     throw ParquetException("The file only has ", num_columns(),
                            " columns, requested metadata for column: ", i);
@@ -656,7 +694,7 @@ class FileMetaData::FileMetaDataImpl {
   }
 
   std::unique_ptr<RowGroupMetaData> RowGroup(int i) {
-    if (!(i < num_row_groups())) {
+    if (!(i >= 0 && i < num_row_groups())) {
       std::stringstream ss;
       ss << "The file only has " << num_row_groups()
          << " row groups, requested metadata for row group: " << i;
@@ -685,13 +723,20 @@ class FileMetaData::FileMetaDataImpl {
   }
 
   format::RowGroup& row_group(int i) {
-    DCHECK_LT(i, num_row_groups());
+    if (!(i >= 0 && i < num_row_groups())) {
+      std::stringstream ss;
+      ss << "The file only has " << num_row_groups()
+         << " row groups, requested metadata for row group: " << i;
+      throw ParquetException(ss.str());
+    }
     return metadata_->row_groups[i];
   }
 
   void AppendRowGroups(const std::unique_ptr<FileMetaDataImpl>& other) {
-    if (!schema()->Equals(*other->schema())) {
-      throw ParquetException("AppendRowGroups requires equal schemas.");
+    std::ostringstream diff_output;
+    if (!schema()->Equals(*other->schema(), &diff_output)) {
+      auto msg = "AppendRowGroups requires equal schemas.\n" + diff_output.str();
+      throw ParquetException(msg);
     }
 
     // ARROW-13654: `other` may point to self, be careful not to enter an infinite loop

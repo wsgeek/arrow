@@ -714,6 +714,11 @@ def test_struct_from_arrays():
         pa.StructArray.from_arrays(
             arrays, fields, mask=pa.chunked_array([mask]))
 
+    # Non-empty array with no fields https://github.com/apache/arrow/issues/15109
+    arr = pa.StructArray.from_arrays([], [], mask=mask)
+    assert arr.is_null() == mask
+    assert arr.to_pylist() == [None, {}, {}]
+
 
 def test_struct_array_from_chunked():
     # ARROW-11780
@@ -989,6 +994,16 @@ def test_map_labelled():
     assert arr.type.key_field == pa.field("name", pa.utf8(), nullable=False)
     assert arr.type.item_field == pa.field("value", pa.int64())
     assert len(arr) == 2
+
+
+def test_map_from_dict():
+    # ARROW-17832
+    tup_arr = pa.array([[('a', 1), ('b', 2)], [('c', 3)]],
+                       pa.map_(pa.string(), pa.int64()))
+    dict_arr = pa.array([{'a': 1, 'b': 2}, {'c': 3}],
+                        pa.map_(pa.string(), pa.int64()))
+
+    assert tup_arr.equals(dict_arr)
 
 
 def test_map_from_arrays():
@@ -2906,6 +2921,41 @@ def test_struct_array_field():
             a.field(invalid_name)
 
 
+def test_struct_array_flattened_field():
+    ty = pa.struct([pa.field('x', pa.int16()),
+                    pa.field('y', pa.float32())])
+    a = pa.array([(1, 2.5), (3, 4.5), (5, 6.5)], type=ty,
+                 mask=pa.array([False, True, False]))
+
+    x0 = a._flattened_field(0)
+    y0 = a._flattened_field(1)
+    x1 = a._flattened_field(-2)
+    y1 = a._flattened_field(-1)
+    x2 = a._flattened_field('x')
+    y2 = a._flattened_field('y')
+
+    assert isinstance(x0, pa.lib.Int16Array)
+    assert isinstance(y1, pa.lib.FloatArray)
+    assert x0.equals(pa.array([1, None, 5], type=pa.int16()))
+    assert y0.equals(pa.array([2.5, None, 6.5], type=pa.float32()))
+    assert x0.equals(x1)
+    assert x0.equals(x2)
+    assert y0.equals(y1)
+    assert y0.equals(y2)
+
+    for invalid_index in [None, pa.int16()]:
+        with pytest.raises(TypeError):
+            a._flattened_field(invalid_index)
+
+    for invalid_index in [3, -3]:
+        with pytest.raises(IndexError):
+            a._flattened_field(invalid_index)
+
+    for invalid_name in ['z', '']:
+        with pytest.raises(KeyError):
+            a._flattened_field(invalid_name)
+
+
 def test_empty_cast():
     types = [
         pa.null(),
@@ -3277,3 +3327,83 @@ def test_to_pandas_timezone():
     arr = pa.chunked_array([arr])
     s = arr.to_pandas()
     assert s.dt.tz is not None
+
+
+def test_array_sort():
+    arr = pa.array([5, 7, 35], type=pa.int64())
+    sorted_arr = arr.sort("descending")
+    assert sorted_arr.to_pylist() == [35, 7, 5]
+
+    arr = pa.chunked_array([[1, 2, 3], [4, 5, 6]])
+    sorted_arr = arr.sort("descending")
+    assert sorted_arr.to_pylist() == [6, 5, 4, 3, 2, 1]
+
+    arr = pa.array([5, 7, 35, None], type=pa.int64())
+    sorted_arr = arr.sort("descending", null_placement="at_end")
+    assert sorted_arr.to_pylist() == [35, 7, 5, None]
+    sorted_arr = arr.sort("descending", null_placement="at_start")
+    assert sorted_arr.to_pylist() == [None, 35, 7, 5]
+
+
+def test_struct_array_sort():
+    arr = pa.StructArray.from_arrays([
+        pa.array([5, 7, 7, 35], type=pa.int64()),
+        pa.array(["foo", "car", "bar", "foobar"])
+    ], names=["a", "b"])
+
+    sorted_arr = arr.sort("descending", by="a")
+    assert sorted_arr.to_pylist() == [
+        {"a": 35, "b": "foobar"},
+        {"a": 7, "b": "car"},
+        {"a": 7, "b": "bar"},
+        {"a": 5, "b": "foo"},
+    ]
+
+    arr_with_nulls = pa.StructArray.from_arrays([
+        pa.array([5, 7, 7, 35], type=pa.int64()),
+        pa.array(["foo", "car", "bar", "foobar"])
+    ], names=["a", "b"], mask=pa.array([False, False, True, False]))
+
+    sorted_arr = arr_with_nulls.sort(
+        "descending", by="a", null_placement="at_start")
+    assert sorted_arr.to_pylist() == [
+        None,
+        {"a": 35, "b": "foobar"},
+        {"a": 7, "b": "car"},
+        {"a": 5, "b": "foo"},
+    ]
+
+    sorted_arr = arr_with_nulls.sort(
+        "descending", by="a", null_placement="at_end")
+    assert sorted_arr.to_pylist() == [
+        {"a": 35, "b": "foobar"},
+        {"a": 7, "b": "car"},
+        {"a": 5, "b": "foo"},
+        None
+    ]
+
+
+def test_array_accepts_pyarrow_array():
+    arr = pa.array([1, 2, 3])
+    result = pa.array(arr)
+    assert arr == result
+
+    # Test casting to a different type
+    result = pa.array(arr, type=pa.uint8())
+    expected = pa.array([1, 2, 3], type=pa.uint8())
+    assert expected == result
+    assert expected.type == pa.uint8()
+
+    # Test casting with safe keyword
+    arr = pa.array([2 ** 63 - 1], type=pa.int64())
+
+    with pytest.raises(pa.ArrowInvalid):
+        pa.array(arr, type=pa.int32())
+
+    expected = pa.array([-1], type=pa.int32())
+    result = pa.array(arr, type=pa.int32(), safe=False)
+    assert result == expected
+
+    # Test memory_pool keyword is accepted
+    result = pa.array(arr, memory_pool=pa.default_memory_pool())
+    assert arr == result

@@ -21,7 +21,7 @@ import (
 	"hash/maphash"
 	"strings"
 
-	"github.com/apache/arrow/go/v10/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
 )
 
 // Type is a logical type. They can be expressed as
@@ -150,12 +150,7 @@ const (
 	// calendar interval with three fields
 	INTERVAL_MONTH_DAY_NANO
 
-	// INTERVAL could be any of the interval types, kept to avoid breaking anyone
-	// after switching to individual type ids for the interval types that were using
-	// it when calling MakeFromData or NewBuilder
-	//
-	// Deprecated and will be removed in the next major version release
-	INTERVAL
+	RUN_END_ENCODED
 
 	// Alias to ensure we do not break any consumers
 	DECIMAL = DECIMAL128
@@ -286,6 +281,16 @@ func IsInteger(t Type) bool {
 func IsUnsignedInteger(t Type) bool {
 	switch t {
 	case UINT8, UINT16, UINT32, UINT64:
+		return true
+	}
+	return false
+}
+
+// IsFloating is a helper that returns true if the type ID provided is
+// one of Float16, Float32, or Float64
+func IsFloating(t Type) bool {
+	switch t {
+	case FLOAT16, FLOAT32, FLOAT64:
 		return true
 	}
 	return false

@@ -34,11 +34,7 @@ ExecPlan <- R6Class("ExecPlan",
         if (isTRUE(filter)) {
           filter <- Expression$scalar(TRUE)
         }
-        # Use FieldsInExpression to find all from dataset$selected_columns
-        colnames <- unique(unlist(map(
-          dataset$selected_columns,
-          field_names_in_expression
-        )))
+        projection <- dataset$selected_columns
         dataset <- dataset$.data
         assert_is(dataset, "Dataset")
       } else {
@@ -46,10 +42,10 @@ ExecPlan <- R6Class("ExecPlan",
         # Just a dataset, not a query, so there's no predicates to push down
         # so set some defaults
         filter <- Expression$scalar(TRUE)
-        colnames <- names(dataset)
+        projection <- make_field_refs(colnames)
       }
 
-      out <- ExecNode_Scan(self, dataset, filter, colnames %||% character(0))
+      out <- ExecNode_Scan(self, dataset, filter, projection)
       # Hold onto the source data's schema so we can preserve schema metadata
       # in the resulting Scan/Write
       out$extras$source_schema <- dataset$schema
@@ -83,7 +79,9 @@ ExecPlan <- R6Class("ExecPlan",
           # SinkNode, so if there are any steps done after head/tail, we need to
           # evaluate the query up to then and then do a new query for the rest.
           # as_record_batch_reader() will build and run an ExecPlan
-          node <- self$SourceNode(as_record_batch_reader(.data$.data))
+          reader <- as_record_batch_reader(.data$.data)
+          on.exit(reader$.unsafe_delete())
+          node <- self$SourceNode(reader)
         } else {
           # Recurse
           node <- self$Build(.data$.data)
@@ -103,7 +101,11 @@ ExecPlan <- R6Class("ExecPlan",
         # plus group_by_vars (last)
         # TODO: validate that none of names(aggregations) are the same as names(group_by_vars)
         # dplyr does not error on this but the result it gives isn't great
-        node <- node$Project(summarize_projection(.data))
+        projection <- summarize_projection(.data)
+        # skip projection if no grouping and all aggregate functions are nullary
+        if (length(projection)) {
+          node <- node$Project(projection)
+        }
 
         if (grouped) {
           # We need to prefix all of the aggregation function names with "hash_"
@@ -114,9 +116,9 @@ ExecPlan <- R6Class("ExecPlan",
         }
 
         .data$aggregations <- imap(.data$aggregations, function(x, name) {
-          # Embed the name inside the aggregation objects. `target` and `name`
-          # are the same because we just Project()ed the data that way above
-          x[["name"]] <- x[["target"]] <- name
+          # Embed `name` and `targets` inside the aggregation objects
+          x[["name"]] <- name
+          x[["targets"]] <- aggregate_target_names(x$data, name)
           x
         })
 
@@ -154,14 +156,13 @@ ExecPlan <- R6Class("ExecPlan",
         node <- node$Project(projection)
         if (!is.null(.data$join)) {
           right_node <- self$Build(.data$join$right_data)
-          left_output <- names(.data)
-          right_output <- setdiff(names(.data$join$right_data), .data$join$by)
+
           node <- node$Join(
             type = .data$join$type,
             right_node = right_node,
             by = .data$join$by,
-            left_output = left_output,
-            right_output = right_output,
+            left_output = .data$join$left_output,
+            right_output = .data$join$right_output,
             left_suffix = .data$join$suffix[[1]],
             right_suffix = .data$join$suffix[[2]]
           )
@@ -261,6 +262,10 @@ ExecPlan <- R6Class("ExecPlan",
     },
     ToString = function() {
       ExecPlan_ToString(self)
+    },
+    .unsafe_delete = function() {
+      ExecPlan_UnsafeDelete(self)
+      super$.unsafe_delete()
     }
   )
 )
@@ -362,6 +367,14 @@ ExecPlanReader <- R6Class("ExecPlanReader",
   )
 )
 
+#' @export
+head.ExecPlanReader <- function(x, n = 6L, ...) {
+  # We need to make sure that the head() of an ExecPlanReader
+  # is also an ExecPlanReader so that the evaluation takes place
+  # in a way that supports calls into R.
+  as_record_batch_reader(as_adq(RecordBatchReader__Head(x, n)))
+}
+
 do_exec_plan_substrait <- function(substrait_plan) {
   if (is.string(substrait_plan)) {
     substrait_plan <- substrait__internal__SubstraitFromJSON(substrait_plan)
@@ -372,6 +385,8 @@ do_exec_plan_substrait <- function(substrait_plan) {
   }
 
   plan <- ExecPlan$create()
+  on.exit(plan$.unsafe_delete())
+
   ExecPlan_run_substrait(plan, substrait_plan)
 }
 

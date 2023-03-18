@@ -25,13 +25,6 @@ from pyarrow.includes.libarrow cimport *
 from pyarrow.includes.libarrow_fs cimport *
 
 
-cdef extern from "arrow/api.h" namespace "arrow" nogil:
-
-    cdef cppclass CRecordBatchIterator "arrow::RecordBatchIterator"(
-            CIterator[shared_ptr[CRecordBatch]]):
-        pass
-
-
 cdef extern from "arrow/dataset/plan.h" namespace "arrow::dataset::internal" nogil:
 
     cdef void Initialize()
@@ -54,6 +47,7 @@ cdef extern from "arrow/dataset/api.h" namespace "arrow::dataset" nogil:
         shared_ptr[CSchema] dataset_schema
         shared_ptr[CSchema] projected_schema
         c_bool use_threads
+        CExpression filter
 
     cdef cppclass CScanNodeOptions "arrow::dataset::ScanNodeOptions"(CExecNodeOptions):
         CScanNodeOptions(shared_ptr[CDataset] dataset, shared_ptr[CScanOptions] scan_options)
@@ -126,6 +120,7 @@ cdef extern from "arrow/dataset/api.h" namespace "arrow::dataset" nogil:
         CStatus FragmentReadahead(int32_t fragment_readahead)
         CStatus FragmentScanOptions(
             shared_ptr[CFragmentScanOptions] fragment_scan_options)
+        CResult[shared_ptr[CScanOptions]] GetScanOptions()
         CResult[shared_ptr[CScanner]] Finish()
         shared_ptr[CSchema] schema() const
 
@@ -256,7 +251,7 @@ cdef extern from "arrow/dataset/api.h" namespace "arrow::dataset" nogil:
 
     cdef cppclass CIpcFileWriteOptions \
             "arrow::dataset::IpcFileWriteOptions"(CFileWriteOptions):
-        pass
+        shared_ptr[CIpcWriteOptions] options
 
     cdef cppclass CIpcFileFormat "arrow::dataset::IpcFileFormat"(
             CFileFormat):

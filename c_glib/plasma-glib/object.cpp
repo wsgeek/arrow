@@ -30,6 +30,9 @@ G_BEGIN_DECLS
  * @title: Object related classes
  * @include: plasma-glib/plasma-glib.h
  *
+ * Apache Arrow Plasma C GLib is deprecated since 10.0.0. This will be
+ * removed from 12.0.0 or so.
+ *
  * #GPlasmaObjectID is a class for an object ID.
  *
  * #GPlasmaObject is a base class for an object stored in plasma store.
@@ -137,7 +140,8 @@ gchar *
 gplasma_object_id_to_hex(GPlasmaObjectID *id)
 {
   auto priv = GPLASMA_OBJECT_ID_GET_PRIVATE(id);
-  return g_strdup(priv->id.hex().c_str());
+  const auto hex = priv->id.hex();
+  return g_strdup(hex.c_str());
 }
 
 typedef struct GPlasmaObjectPrivate_ {

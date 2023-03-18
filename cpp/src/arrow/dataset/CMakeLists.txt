@@ -28,7 +28,14 @@ set(ARROW_DATASET_SRCS
     partition.cc
     plan.cc
     projector.cc
-    scanner.cc)
+    scanner.cc
+    scan_node.cc)
+
+if(ARROW_PARQUET)
+  set(ARROW_DATASET_PKG_CONFIG_REQUIRES parquet)
+else()
+  set(ARROW_DATASET_PKG_CONFIG_REQUIRES arrow)
+endif()
 
 set(ARROW_DATASET_STATIC_LINK_LIBS)
 set(ARROW_DATASET_SHARED_LINK_LIBS)
@@ -37,6 +44,10 @@ set(ARROW_DATASET_SHARED_INSTALL_INTERFACE_LIBS)
 
 if(ARROW_CSV)
   set(ARROW_DATASET_SRCS ${ARROW_DATASET_SRCS} file_csv.cc)
+endif()
+
+if(ARROW_JSON)
+  set(ARROW_DATASET_SRCS ${ARROW_DATASET_SRCS} file_json.cc)
 endif()
 
 if(ARROW_ORC)
@@ -81,6 +92,10 @@ add_arrow_lib(arrow_dataset
               ${ARROW_DATASET_STATIC_LINK_LIBS}
               STATIC_INSTALL_INTERFACE_LIBS
               ${ARROW_DATASET_STATIC_INSTALL_INTERFACE_LIBS})
+
+if(ARROW_BUILD_STATIC AND WIN32)
+  target_compile_definitions(arrow_dataset_static PUBLIC ARROW_DS_STATIC)
+endif()
 
 if(ARROW_TEST_LINKAGE STREQUAL "static")
   set(ARROW_DATASET_TEST_LINK_LIBS arrow_dataset_static ${ARROW_TEST_STATIC_LINK_LIBS})
@@ -135,6 +150,10 @@ add_arrow_dataset_test(scanner_test)
 
 if(ARROW_CSV)
   add_arrow_dataset_test(file_csv_test)
+endif()
+
+if(ARROW_JSON)
+  add_arrow_dataset_test(file_json_test)
 endif()
 
 if(ARROW_ORC)

@@ -22,6 +22,7 @@
 
 #include <iosfwd>
 #include <memory>
+#include <ratio>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -59,8 +60,6 @@ struct ARROW_EXPORT Scalar : public std::enable_shared_from_this<Scalar>,
   /// \brief Whether the value is valid (not null) or not
   bool is_valid = false;
 
-  using util::EqualityComparable<Scalar>::operator==;
-  using util::EqualityComparable<Scalar>::Equals;
   bool Equals(const Scalar& other,
               const EqualOptions& options = EqualOptions::Defaults()) const;
 
@@ -137,6 +136,8 @@ struct ARROW_EXPORT PrimitiveScalarBase : public Scalar {
       : Scalar(std::move(type), false) {}
 
   using Scalar::Scalar;
+  /// \brief Get a const pointer to the value of this scalar. May be null.
+  virtual const void* data() const = 0;
   /// \brief Get a mutable pointer to the value of this scalar. May be null.
   virtual void* mutable_data() = 0;
   /// \brief Get an immutable view of the value of this scalar as bytes.
@@ -158,6 +159,7 @@ struct ARROW_EXPORT PrimitiveScalar : public PrimitiveScalarBase {
 
   ValueType value{};
 
+  const void* data() const override { return &value; }
   void* mutable_data() override { return &value; }
   std::string_view view() const override {
     return std::string_view(reinterpret_cast<const char*>(&value), sizeof(ValueType));
@@ -242,6 +244,9 @@ struct ARROW_EXPORT BaseBinaryScalar : public internal::PrimitiveScalarBase {
 
   std::shared_ptr<Buffer> value;
 
+  const void* data() const override {
+    return value ? reinterpret_cast<const void*>(value->data()) : NULLPTR;
+  }
   void* mutable_data() override {
     return value ? reinterpret_cast<void*>(value->mutable_data()) : NULLPTR;
   }
@@ -323,7 +328,7 @@ struct ARROW_EXPORT FixedSizeBinaryScalar : public BinaryScalar {
 template <typename T>
 struct TemporalScalar : internal::PrimitiveScalar<T> {
   using internal::PrimitiveScalar<T>::PrimitiveScalar;
-  using ValueType = typename TemporalScalar<T>::ValueType;
+  using ValueType = typename internal::PrimitiveScalar<T>::ValueType;
 
   TemporalScalar(ValueType value, std::shared_ptr<DataType> type)
       : internal::PrimitiveScalar<T>(std::move(value), type) {}
@@ -369,6 +374,9 @@ struct ARROW_EXPORT TimestampScalar : public TemporalScalar<TimestampType> {
   TimestampScalar(typename TemporalScalar<TimestampType>::ValueType value,
                   TimeUnit::type unit, std::string tz = "")
       : TimestampScalar(std::move(value), timestamp(unit, std::move(tz))) {}
+
+  static Result<TimestampScalar> FromISO8601(std::string_view iso8601,
+                                             TimeUnit::type unit);
 };
 
 template <typename T>
@@ -400,6 +408,27 @@ struct ARROW_EXPORT DurationScalar : public TemporalScalar<DurationType> {
   DurationScalar(typename TemporalScalar<DurationType>::ValueType value,
                  TimeUnit::type unit)
       : DurationScalar(std::move(value), duration(unit)) {}
+
+  // Convenience constructors for a DurationScalar from std::chrono::nanoseconds
+  template <template <typename, typename> class StdDuration, typename Rep>
+  explicit DurationScalar(StdDuration<Rep, std::nano> d)
+      : DurationScalar{DurationScalar(d.count(), duration(TimeUnit::NANO))} {}
+
+  // Convenience constructors for a DurationScalar from std::chrono::microseconds
+  template <template <typename, typename> class StdDuration, typename Rep>
+  explicit DurationScalar(StdDuration<Rep, std::micro> d)
+      : DurationScalar{DurationScalar(d.count(), duration(TimeUnit::MICRO))} {}
+
+  // Convenience constructors for a DurationScalar from std::chrono::milliseconds
+  template <template <typename, typename> class StdDuration, typename Rep>
+  explicit DurationScalar(StdDuration<Rep, std::milli> d)
+      : DurationScalar{DurationScalar(d.count(), duration(TimeUnit::MILLI))} {}
+
+  // Convenience constructors for a DurationScalar from std::chrono::seconds
+  // or from units which are whole numbers of seconds
+  template <template <typename, typename> class StdDuration, typename Rep, intmax_t Num>
+  explicit DurationScalar(StdDuration<Rep, std::ratio<Num, 1>> d)
+      : DurationScalar{DurationScalar(d.count() * Num, duration(TimeUnit::SECOND))} {}
 };
 
 template <typename TYPE_CLASS, typename VALUE_TYPE>
@@ -410,6 +439,10 @@ struct ARROW_EXPORT DecimalScalar : public internal::PrimitiveScalarBase {
 
   DecimalScalar(ValueType value, std::shared_ptr<DataType> type)
       : internal::PrimitiveScalarBase(std::move(type), true), value(value) {}
+
+  const void* data() const override {
+    return reinterpret_cast<const void*>(value.native_endian_bytes());
+  }
 
   void* mutable_data() override {
     return reinterpret_cast<void*>(value.mutable_native_endian_bytes());
@@ -535,6 +568,29 @@ struct ARROW_EXPORT DenseUnionScalar : public UnionScalar {
         value(std::move(value)) {}
 };
 
+struct ARROW_EXPORT RunEndEncodedScalar : public Scalar {
+  using TypeClass = RunEndEncodedType;
+  using ValueType = std::shared_ptr<Scalar>;
+
+  ValueType value;
+
+  RunEndEncodedScalar(std::shared_ptr<Scalar> value, std::shared_ptr<DataType> type);
+
+  /// \brief Constructs a NULL RunEndEncodedScalar
+  explicit RunEndEncodedScalar(const std::shared_ptr<DataType>& type);
+
+  ~RunEndEncodedScalar() override;
+
+  const std::shared_ptr<DataType>& run_end_type() const {
+    return ree_type().run_end_type();
+  }
+
+  const std::shared_ptr<DataType>& value_type() const { return ree_type().value_type(); }
+
+ private:
+  const TypeClass& ree_type() const { return internal::checked_cast<TypeClass&>(*type); }
+};
+
 /// \brief A Scalar value for DictionaryType
 ///
 /// `is_valid` denotes the validity of the `index`, regardless of
@@ -557,6 +613,9 @@ struct ARROW_EXPORT DictionaryScalar : public internal::PrimitiveScalarBase {
 
   Result<std::shared_ptr<Scalar>> GetEncodedValue() const;
 
+  const void* data() const override {
+    return internal::checked_cast<internal::PrimitiveScalarBase&>(*value.index).data();
+  }
   void* mutable_data() override {
     return internal::checked_cast<internal::PrimitiveScalarBase&>(*value.index)
         .mutable_data();

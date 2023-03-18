@@ -15,27 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest-matchers.h>
 #include <gtest/gtest.h>
 
-#include "arrow/array.h"
 #include "arrow/array/builder_binary.h"
+#include "arrow/compute/api_vector.h"
 #include "arrow/compute/cast.h"
+#include "arrow/compute/exec/exec_plan.h"
 #include "arrow/compute/exec/options.h"
 #include "arrow/compute/exec/util.h"
+#include "arrow/datum.h"
 #include "arrow/engine/substrait/extension_set.h"
-#include "arrow/engine/substrait/plan_internal.h"
+#include "arrow/engine/substrait/options.h"
 #include "arrow/engine/substrait/serde.h"
 #include "arrow/engine/substrait/test_plan_builder.h"
-#include "arrow/engine/substrait/type_internal.h"
 #include "arrow/record_batch.h"
+#include "arrow/result.h"
+#include "arrow/status.h"
 #include "arrow/table.h"
 #include "arrow/testing/future_util.h"
 #include "arrow/testing/gtest_util.h"
-#include "arrow/type.h"
+#include "arrow/type_fwd.h"
 
 namespace arrow {
 
@@ -43,6 +53,7 @@ namespace engine {
 struct FunctionTestCase {
   Id function_id;
   std::vector<std::string> arguments;
+  std::unordered_map<std::string, std::vector<std::string>> options;
   std::vector<std::shared_ptr<DataType>> data_types;
   // For a test case that should fail just use the empty string
   std::string expected_output;
@@ -98,16 +109,18 @@ Result<std::shared_ptr<compute::ExecPlan>> PlanFromTestCase(
     const FunctionTestCase& test_case, std::shared_ptr<Table>* output_table) {
   ARROW_ASSIGN_OR_RAISE(std::shared_ptr<Table> input_table,
                         GetInputTable(test_case.arguments, test_case.data_types));
-  ARROW_ASSIGN_OR_RAISE(std::shared_ptr<Buffer> substrait,
-                        internal::CreateScanProjectSubstrait(
-                            test_case.function_id, input_table, test_case.arguments,
-                            test_case.data_types, *test_case.expected_output_type));
+  ARROW_ASSIGN_OR_RAISE(
+      std::shared_ptr<Buffer> substrait,
+      internal::CreateScanProjectSubstrait(
+          test_case.function_id, input_table, test_case.arguments, test_case.options,
+          test_case.data_types, *test_case.expected_output_type));
   std::shared_ptr<compute::SinkNodeConsumer> consumer =
       std::make_shared<compute::TableSinkNodeConsumer>(output_table,
                                                        default_memory_pool());
 
   // Mock table provider that ignores the table name and returns input_table
-  NamedTableProvider table_provider = [input_table](const std::vector<std::string>&) {
+  NamedTableProvider table_provider = [input_table](const std::vector<std::string>&,
+                                                    const Schema&) {
     std::shared_ptr<compute::ExecNodeOptions> options =
         std::make_shared<compute::TableSourceNodeOptions>(input_table);
     return compute::Declaration("table_source", {}, options, "mock_source");
@@ -128,7 +141,7 @@ void CheckValidTestCases(const std::vector<FunctionTestCase>& valid_cases) {
     std::shared_ptr<Table> output_table;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<compute::ExecPlan> plan,
                          PlanFromTestCase(test_case, &output_table));
-    ASSERT_OK(plan->StartProducing());
+    plan->StartProducing();
     ASSERT_FINISHES_OK(plan->finished());
 
     // Could also modify the Substrait plan with an emit to drop the leading columns
@@ -144,202 +157,401 @@ void CheckValidTestCases(const std::vector<FunctionTestCase>& valid_cases) {
 
 void CheckErrorTestCases(const std::vector<FunctionTestCase>& error_cases) {
   for (const FunctionTestCase& test_case : error_cases) {
+    ARROW_SCOPED_TRACE("func=", test_case.function_id.uri, "#",
+                       test_case.function_id.name);
     std::shared_ptr<Table> output_table;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<compute::ExecPlan> plan,
                          PlanFromTestCase(test_case, &output_table));
-    ASSERT_OK(plan->StartProducing());
+    plan->StartProducing();
     ASSERT_FINISHES_AND_RAISES(Invalid, plan->finished());
   }
 }
+
+template <typename ErrorMatcher>
+void CheckNotYetImplementedTestCase(const FunctionTestCase& test_case,
+                                    ErrorMatcher error_matcher) {
+  ARROW_SCOPED_TRACE("func=", test_case.function_id.uri, "#", test_case.function_id.name);
+  std::shared_ptr<Table> output_table;
+  EXPECT_RAISES_WITH_MESSAGE_THAT(NotImplemented, error_matcher,
+                                  PlanFromTestCase(test_case, &output_table));
+}
+
+static const std::unordered_map<std::string, std::vector<std::string>> kNoOptions;
 
 // These are not meant to be an exhaustive test of Substrait
 // conformance.  Instead, we should test just enough to ensure
 // we are mapping to the correct function
 TEST(FunctionMapping, ValidCases) {
-  const std::vector<FunctionTestCase> valid_test_cases = {
+  const std::initializer_list<FunctionTestCase> valid_test_cases = {
       {{kSubstraitArithmeticFunctionsUri, "add"},
-       {"SILENT", "127", "10"},
-       {nullptr, int8(), int8()},
+       {"127", "10"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8(), int8()},
        "-119",
        int8()},
+      {{kArrowSimpleExtensionFunctionsUri, "add_checked"},
+       {"10", "15"},
+       kNoOptions,
+       {int8(), int8()},
+       "25",
+       int8()},
       {{kSubstraitArithmeticFunctionsUri, "subtract"},
-       {"SILENT", "-119", "10"},
-       {nullptr, int8(), int8()},
+       {"-119", "10"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8(), int8()},
        "127",
        int8()},
       {{kSubstraitArithmeticFunctionsUri, "multiply"},
-       {"SILENT", "10", "13"},
-       {nullptr, int8(), int8()},
+       {"10", "13"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8(), int8()},
        "-126",
        int8()},
       {{kSubstraitArithmeticFunctionsUri, "divide"},
-       {"SILENT", "-128", "-1"},
-       {nullptr, int8(), int8()},
+       {"-128", "-1"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8(), int8()},
        "0",
+       int8()},
+      {{kSubstraitArithmeticFunctionsUri, "sign"},
+       {"-1"},
+       kNoOptions,
+       {int8()},
+       "-1",
+       int8()},
+      {{kSubstraitArithmeticFunctionsUri, "power"},
+       {"2", "2"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8(), int8()},
+       "4",
+       int8()},
+      {{kSubstraitArithmeticFunctionsUri, "sqrt"},
+       {"4"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8()},
+       "2",
+       float64()},
+      {{kSubstraitArithmeticFunctionsUri, "exp"},
+       {"1"},
+       kNoOptions,
+       {float64()},
+       "2.718281828459045",
+       float64()},
+      {{kSubstraitArithmeticFunctionsUri, "abs"},
+       {"-1"},
+       {{"overflow", {"SILENT", "ERROR"}}},
+       {int8()},
+       "1",
        int8()},
       {{kSubstraitBooleanFunctionsUri, "or"},
        {"1", ""},
+       kNoOptions,
        {boolean(), boolean()},
        "1",
        boolean()},
       {{kSubstraitBooleanFunctionsUri, "and"},
        {"1", ""},
+       kNoOptions,
        {boolean(), boolean()},
        "",
        boolean()},
       {{kSubstraitBooleanFunctionsUri, "xor"},
        {"1", "1"},
+       kNoOptions,
        {boolean(), boolean()},
        "0",
        boolean()},
-      {{kSubstraitBooleanFunctionsUri, "not"}, {"1"}, {boolean()}, "0", boolean()},
+      {{kSubstraitBooleanFunctionsUri, "not"},
+       {"1"},
+       kNoOptions,
+       {boolean()},
+       "0",
+       boolean()},
       {{kSubstraitComparisonFunctionsUri, "equal"},
        {"57", "57"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
-      {{kSubstraitComparisonFunctionsUri, "is_null"}, {"abc"}, {utf8()}, "0", boolean()},
+      {{kSubstraitComparisonFunctionsUri, "is_null"},
+       {"abc"},
+       kNoOptions,
+       {utf8()},
+       "0",
+       boolean()},
       {{kSubstraitComparisonFunctionsUri, "is_not_null"},
        {"57"},
+       kNoOptions,
        {int8()},
        "1",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "not_equal"},
        {"57", "57"},
+       kNoOptions,
        {int8(), int8()},
        "0",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "lt"},
        {"57", "80"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "lt"},
        {"57", "57"},
+       kNoOptions,
        {int8(), int8()},
        "0",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "gt"},
        {"57", "30"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "gt"},
        {"57", "57"},
+       kNoOptions,
        {int8(), int8()},
        "0",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "lte"},
        {"57", "57"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "lte"},
        {"50", "57"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "gte"},
        {"57", "57"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
       {{kSubstraitComparisonFunctionsUri, "gte"},
        {"60", "57"},
+       kNoOptions,
        {int8(), int8()},
        "1",
        boolean()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"YEAR", "2022-07-15T14:33:14"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO)},
        "2022",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"MONTH", "2022-07-15T14:33:14"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO)},
        "7",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"DAY", "2022-07-15T14:33:14"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO)},
        "15",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"SECOND", "2022-07-15T14:33:14"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO)},
        "14",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"YEAR", "2022-07-15T14:33:14Z"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO, "UTC")},
        "2022",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"MONTH", "2022-07-15T14:33:14Z"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO, "UTC")},
        "7",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"DAY", "2022-07-15T14:33:14Z"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO, "UTC")},
        "15",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "extract"},
        {"SECOND", "2022-07-15T14:33:14Z"},
+       kNoOptions,
        {nullptr, timestamp(TimeUnit::MICRO, "UTC")},
        "14",
        int64()},
       {{kSubstraitDatetimeFunctionsUri, "lt"},
        {"2022-07-15T14:33:14", "2022-07-15T14:33:20"},
+       kNoOptions,
        {timestamp(TimeUnit::MICRO), timestamp(TimeUnit::MICRO)},
        "1",
        boolean()},
       {{kSubstraitDatetimeFunctionsUri, "lte"},
        {"2022-07-15T14:33:14", "2022-07-15T14:33:14"},
+       kNoOptions,
        {timestamp(TimeUnit::MICRO), timestamp(TimeUnit::MICRO)},
        "1",
        boolean()},
       {{kSubstraitDatetimeFunctionsUri, "gt"},
        {"2022-07-15T14:33:30", "2022-07-15T14:33:14"},
+       kNoOptions,
        {timestamp(TimeUnit::MICRO), timestamp(TimeUnit::MICRO)},
        "1",
        boolean()},
       {{kSubstraitDatetimeFunctionsUri, "gte"},
        {"2022-07-15T14:33:14", "2022-07-15T14:33:14"},
+       kNoOptions,
        {timestamp(TimeUnit::MICRO), timestamp(TimeUnit::MICRO)},
        "1",
        boolean()},
       {{kSubstraitStringFunctionsUri, "concat"},
        {"abc", "def"},
+       kNoOptions,
        {utf8(), utf8()},
        "abcdef",
-       utf8()}};
+       utf8()},
+      {{kSubstraitLogarithmicFunctionsUri, "ln"},
+       {"1"},
+       kNoOptions,
+       {int8()},
+       "0",
+       float64()},
+      {{kSubstraitLogarithmicFunctionsUri, "log10"},
+       {"10"},
+       kNoOptions,
+       {int8()},
+       "1",
+       float64()},
+      {{kSubstraitLogarithmicFunctionsUri, "log2"},
+       {"2"},
+       kNoOptions,
+       {int8()},
+       "1",
+       float64()},
+      {{kSubstraitLogarithmicFunctionsUri, "log1p"},
+       {"1"},
+       kNoOptions,
+       {int8()},
+       "0.6931471805599453",
+       float64()},
+      {{kSubstraitLogarithmicFunctionsUri, "logb"},
+       {"10", "10"},
+       kNoOptions,
+       {int8(), int8()},
+       "1",
+       float64()},
+      {{kSubstraitRoundingFunctionsUri, "floor"},
+       {"3.1"},
+       kNoOptions,
+       {float64()},
+       "3",
+       float64()},
+      {{kSubstraitRoundingFunctionsUri, "ceil"},
+       {"3.1"},
+       kNoOptions,
+       {float64()},
+       "4",
+       float64()},
+      {{kSubstraitRoundingFunctionsUri, "round"},
+       {"323.125", "2"},
+       {
+           {"rounding", {"TIE_AWAY_FROM_ZERO"}},
+           {"function", {"0"}},
+       },
+       {float32(), int32()},
+       "323.13",
+       float32()},
+      {{kSubstraitRoundingFunctionsUri, "round"},
+       {"323.125", "-2"},
+       {
+           {"rounding", {"TIE_AWAY_FROM_ZERO"}},
+           {"function", {"0"}},
+       },
+       {float64(), int32()},
+       "300",
+       float64()},
+      {{kSubstraitRoundingFunctionsUri, "round"},
+       {"323.135", "2"},
+       {
+           {"rounding", {"TIE_TO_EVEN"}},
+           {"function", {"0"}},
+       },
+       {float64(), int32()},
+       "323.14",
+       float64()},
+      {{kSubstraitRoundingFunctionsUri, "round"},
+       {"323", "-2"},
+       {{"rounding", {"TIE_AWAY_FROM_ZERO"}}},
+       {int64(), int32()},
+       "300",
+       float64()},
+  };
   CheckValidTestCases(valid_test_cases);
 }
 
 TEST(FunctionMapping, ErrorCases) {
   const std::vector<FunctionTestCase> error_test_cases = {
       {{kSubstraitArithmeticFunctionsUri, "add"},
-       {"ERROR", "127", "10"},
-       {nullptr, int8(), int8()},
+       {"127", "10"},
+       {{"overflow", {"ERROR", "SILENT"}}},
+       {int8(), int8()},
+       "",
+       int8()},
+      {{kArrowSimpleExtensionFunctionsUri, "add_checked"},
+       {"127", "10"},
+       kNoOptions,
+       {int8(), int8()},
        "",
        int8()},
       {{kSubstraitArithmeticFunctionsUri, "subtract"},
-       {"ERROR", "-119", "10"},
-       {nullptr, int8(), int8()},
+       {"-119", "10"},
+       {{"overflow", {"ERROR", "SILENT"}}},
+       {int8(), int8()},
        "",
        int8()},
       {{kSubstraitArithmeticFunctionsUri, "multiply"},
-       {"ERROR", "10", "13"},
-       {nullptr, int8(), int8()},
+       {"10", "13"},
+       {{"overflow", {"ERROR", "SILENT"}}},
+       {int8(), int8()},
        "",
        int8()},
       {{kSubstraitArithmeticFunctionsUri, "divide"},
-       {"ERROR", "-128", "-1"},
-       {nullptr, int8(), int8()},
+       {"-128", "-1"},
+       {{"overflow", {"ERROR", "SILENT"}}},
+       {int8(), int8()},
        "",
        int8()}};
   CheckErrorTestCases(error_test_cases);
+}
+
+TEST(FunctionMapping, UnrecognizedOptions) {
+  CheckNotYetImplementedTestCase(
+      {{kSubstraitArithmeticFunctionsUri, "add"},
+       {"-119", "10"},
+       {{"overflow", {"NEW_OVERFLOW_TYPE", "SILENT"}}},
+       {int8(), int8()},
+       "",
+       int8()},
+      ::testing::HasSubstr("The value NEW_OVERFLOW_TYPE is not an expected enum value"));
+  CheckNotYetImplementedTestCase(
+      {{kSubstraitArithmeticFunctionsUri, "add"},
+       {"-119", "10"},
+       {{"overflow", {"SATURATE"}}},
+       {int8(), int8()},
+       "",
+       int8()},
+      ::testing::HasSubstr(
+          "During a call to a function with id " +
+          std::string(kSubstraitArithmeticFunctionsUri) +
+          "#add the plan requested the option overflow to be one of [SATURATE] but the "
+          "only supported options are [SILENT, ERROR]"));
 }
 
 // For each aggregate test case we take in three values.  We compute the
@@ -361,6 +573,8 @@ struct AggregateTestCase {
   std::string group_outputs;
   // The data type of the outputs
   std::shared_ptr<DataType> output_type;
+  // The aggregation takes zero columns as input
+  bool nullary = false;
 };
 
 std::shared_ptr<Table> GetInputTableForAggregateCase(const AggregateTestCase& test_case) {
@@ -395,14 +609,17 @@ std::shared_ptr<compute::ExecPlan> PlanFromAggregateCase(
   }
   EXPECT_OK_AND_ASSIGN(
       std::shared_ptr<Buffer> substrait,
-      internal::CreateScanAggSubstrait(test_case.function_id, input_table, key_idxs,
-                                       /*arg_idx=*/1, *test_case.output_type));
+      internal::CreateScanAggSubstrait(
+          test_case.function_id, input_table, key_idxs,
+          /*arg_idxs=*/test_case.nullary ? std::vector<int>{} : std::vector<int>{1},
+          *test_case.output_type));
   std::shared_ptr<compute::SinkNodeConsumer> consumer =
       std::make_shared<compute::TableSinkNodeConsumer>(output_table,
                                                        default_memory_pool());
 
   // Mock table provider that ignores the table name and returns input_table
-  NamedTableProvider table_provider = [input_table](const std::vector<std::string>&) {
+  NamedTableProvider table_provider = [input_table](const std::vector<std::string>&,
+                                                    const Schema&) {
     std::shared_ptr<compute::ExecNodeOptions> options =
         std::make_shared<compute::TableSourceNodeOptions>(input_table);
     return compute::Declaration("table_source", {}, options, "mock_source");
@@ -423,7 +640,7 @@ void CheckWholeAggregateCase(const AggregateTestCase& test_case) {
   std::shared_ptr<compute::ExecPlan> plan =
       PlanFromAggregateCase(test_case, &output_table, /*with_keys=*/false);
 
-  ASSERT_OK(plan->StartProducing());
+  plan->StartProducing();
   ASSERT_FINISHES_OK(plan->finished());
 
   ASSERT_OK_AND_ASSIGN(output_table,
@@ -439,7 +656,7 @@ void CheckGroupedAggregateCase(const AggregateTestCase& test_case) {
   std::shared_ptr<compute::ExecPlan> plan =
       PlanFromAggregateCase(test_case, &output_table, /*with_keys=*/true);
 
-  ASSERT_OK(plan->StartProducing());
+  plan->StartProducing();
   ASSERT_FINISHES_OK(plan->finished());
 
   // The aggregate node's output is unpredictable so we sort by the key column
@@ -499,7 +716,15 @@ TEST(FunctionMapping, AggregateCases) {
        {int8()},
        "[3]",
        "[2, 1]",
-       int64()}};
+       int64()},
+      {{kSubstraitAggregateGenericFunctionsUri, "count"},
+       {"[1, null, 30]"},
+       {int8()},
+       "[3]",
+       "[2, 1]",
+       int64(),
+       /*nullary=*/true},
+  };
   CheckAggregateCases(test_cases);
 }
 

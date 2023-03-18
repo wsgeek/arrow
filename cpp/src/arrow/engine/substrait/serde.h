@@ -28,6 +28,7 @@
 #include "arrow/compute/type_fwd.h"
 #include "arrow/dataset/type_fwd.h"
 #include "arrow/engine/substrait/options.h"
+#include "arrow/engine/substrait/relation.h"
 #include "arrow/engine/substrait/type_fwd.h"
 #include "arrow/engine/substrait/visibility.h"
 #include "arrow/result.h"
@@ -137,6 +138,23 @@ ARROW_ENGINE_EXPORT Result<std::vector<compute::Declaration>> DeserializePlans(
 ARROW_ENGINE_EXPORT Result<std::shared_ptr<compute::ExecPlan>> DeserializePlan(
     const Buffer& buf, const std::shared_ptr<dataset::WriteNodeOptions>& write_options,
     const ExtensionIdRegistry* registry = NULLPTR, ExtensionSet* ext_set_out = NULLPTR,
+    const ConversionOptions& conversion_options = {});
+
+/// \brief Deserializes a Substrait Plan message to a Declaration
+///
+/// The plan will not contain any sink nodes and will be suitable for use in any
+/// of the arrow::compute::DeclarationToXyz methods.
+///
+/// \param[in] buf a buffer containing the protobuf serialization of a Substrait Plan
+/// message
+/// \param[in] registry an extension-id-registry to use, or null for the default one.
+/// \param[out] ext_set_out if non-null, the extension mapping used by the Substrait
+/// Plan is returned here.
+/// \param[in] conversion_options options to control how the conversion is to be done.
+/// \return A declaration representing the Substrait plan
+ARROW_ENGINE_EXPORT Result<PlanInfo> DeserializePlan(
+    const Buffer& buf, const ExtensionIdRegistry* registry = NULLPTR,
+    ExtensionSet* ext_set_out = NULLPTR,
     const ConversionOptions& conversion_options = {});
 
 /// \brief Deserializes a Substrait Type message to the corresponding Arrow type
@@ -261,10 +279,17 @@ Status CheckMessagesEquivalent(std::string_view message_name, const Buffer& l_bu
 ///
 /// \param[in] type_name the name of the Substrait message type to convert
 /// \param[in] json the JSON string to convert
+/// \param[in] ignore_unknown_fields if true then unknown fields will be ignored and
+///            will not cause an error
+///
+///            This should generally be true to allow consumption of plans from newer
+///            producers but setting to false can be useful if you are testing
+///            conformance to a specific Substrait version
 /// \return a buffer filled with the binary protobuf serialization of message
 ARROW_ENGINE_EXPORT
 Result<std::shared_ptr<Buffer>> SubstraitFromJSON(std::string_view type_name,
-                                                  std::string_view json);
+                                                  std::string_view json,
+                                                  bool ignore_unknown_fields = true);
 
 /// \brief Utility function to convert a binary protobuf serialization of a Substrait
 /// message to JSON

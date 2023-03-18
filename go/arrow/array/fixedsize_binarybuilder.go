@@ -23,9 +23,9 @@ import (
 	"reflect"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/internal/debug"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -86,6 +86,11 @@ func (b *FixedSizeBinaryBuilder) AppendNull() {
 func (b *FixedSizeBinaryBuilder) AppendEmptyValue() {
 	b.Reserve(1)
 	b.values.Advance(b.dtype.ByteWidth)
+	b.UnsafeAppendBoolToBitmap(true)
+}
+
+func (b *FixedSizeBinaryBuilder) UnsafeAppend(v []byte) {
+	b.values.unsafeAppend(v)
 	b.UnsafeAppendBoolToBitmap(true)
 }
 
@@ -161,7 +166,7 @@ func (b *FixedSizeBinaryBuilder) newData() (data *Data) {
 	return
 }
 
-func (b *FixedSizeBinaryBuilder) unmarshalOne(dec *json.Decoder) error {
+func (b *FixedSizeBinaryBuilder) UnmarshalOne(dec *json.Decoder) error {
 	t, err := dec.Token()
 	if err != nil {
 		return err
@@ -201,9 +206,9 @@ func (b *FixedSizeBinaryBuilder) unmarshalOne(dec *json.Decoder) error {
 	return nil
 }
 
-func (b *FixedSizeBinaryBuilder) unmarshal(dec *json.Decoder) error {
+func (b *FixedSizeBinaryBuilder) Unmarshal(dec *json.Decoder) error {
 	for dec.More() {
-		if err := b.unmarshalOne(dec); err != nil {
+		if err := b.UnmarshalOne(dec); err != nil {
 			return err
 		}
 	}
@@ -221,7 +226,7 @@ func (b *FixedSizeBinaryBuilder) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("fixed size binary builder must unpack from json array, found %s", delim)
 	}
 
-	return b.unmarshal(dec)
+	return b.Unmarshal(dec)
 }
 
 var (

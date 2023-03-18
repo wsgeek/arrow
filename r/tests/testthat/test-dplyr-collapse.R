@@ -57,7 +57,7 @@ test_that("implicit_schema with mutate", {
         words = as.character(int)
       ) %>%
       implicit_schema(),
-    schema(numbers = float64(), words = utf8())
+    schema(numbers = int32(), words = utf8())
   )
 })
 
@@ -162,8 +162,8 @@ test_that("Properties of collapsed query", {
     print(q),
     "Table (query)
 lgl: bool
-total: int32
-extra: double (multiply_checked(total, 5))
+total: int64
+extra: int64 (multiply_checked(total, 5))
 
 See $.data for the source Arrow object",
     fixed = TRUE

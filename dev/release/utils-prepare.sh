@@ -119,11 +119,8 @@ update_versions() {
     setup.py
   rm -f setup.py.bak
   git add setup.py
-  popd
-
-  pushd "${ARROW_DIR}/python/pyarrow/src"
   sed -i.bak -E -e \
-    "s/^set\(ARROW_PYTHON_VERSION \".+\"\)/set(ARROW_PYTHON_VERSION \"${version}\")/" \
+    "s/^set\(PYARROW_VERSION \".+\"\)/set(PYARROW_VERSION \"${version}\")/" \
     CMakeLists.txt
   rm -f CMakeLists.txt.bak
   git add CMakeLists.txt
@@ -166,15 +163,8 @@ update_versions() {
     parquet/writer_properties.go
   sed -i.bak -E -e \
     "s/const PkgVersion = \".*/const PkgVersion = \"${version}\"/" \
-    arrow/doc.go  
-  # handle the pseudo version in the compute sub-module for now
-  # subsequent changes will allow this to remove the pseudo version but
-  # for now we have to overcome the slight conflict between the existing
-  # "compute" package and the new go.mod file.
-  sed -i.bak -E -e \
-    "s|v[0-9]+\\.0\\.0-00010101000000-000000000000|v${major_version}.0.0-00010101000000-000000000000|" \
-    arrow/compute/go.mod
-  
+    arrow/doc.go
+
   find . -name "*.bak" -exec rm {} \;
   git add .
   popd

@@ -32,7 +32,6 @@ RUN \
   apt update ${quiet} && \
   apt install -y -V ${quiet} \
     build-essential \
-    ccache \
     clang \
     cmake \
     debhelper \
@@ -52,8 +51,8 @@ RUN \
     libgrpc++-dev \
     libgtest-dev \
     liblz4-dev \
-    libprotoc-dev \
     libprotobuf-dev \
+    libprotoc-dev \
     libre2-dev \
     libsnappy-dev \
     libssl-dev \

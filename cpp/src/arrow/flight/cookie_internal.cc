@@ -43,6 +43,9 @@
 const char kCookieExpiresFormat[] = "%d %m %Y %H:%M:%S";
 
 namespace arrow {
+
+using internal::ToChars;
+
 namespace flight {
 namespace internal {
 
@@ -62,7 +65,7 @@ size_t CaseInsensitiveHash::operator()(const std::string& key) const {
   return std::hash<std::string>{}(upper_string);
 }
 
-Cookie Cookie::Parse(const std::string_view& cookie_header_value) {
+Cookie Cookie::Parse(std::string_view cookie_header_value) {
   // Parse the cookie string. If the cookie has an expiration, record it.
   // If the cookie has a max-age, calculate the current time + max_age and set that as
   // the expiration.
@@ -201,7 +204,7 @@ void Cookie::ConvertCookieDate(std::string* date) {
       if ((i + 1) < 10) {
         padded_month = "0";
       }
-      padded_month += std::to_string(i + 1);
+      padded_month += ToChars(i + 1);
 
       // Replace symbolic month with numeric month.
       date->replace(it, months[i].length(), padded_month);

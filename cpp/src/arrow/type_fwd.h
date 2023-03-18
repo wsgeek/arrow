@@ -179,6 +179,11 @@ class DenseUnionArray;
 class DenseUnionBuilder;
 struct DenseUnionScalar;
 
+class RunEndEncodedType;
+class RunEndEncodedArray;
+class RunEndEncodedBuilder;
+struct RunEndEncodedScalar;
+
 template <typename TypeClass>
 class NumericArray;
 
@@ -405,10 +410,16 @@ struct Type {
     /// Calendar interval type with three fields.
     INTERVAL_MONTH_DAY_NANO,
 
+    /// Run-end encoded data.
+    RUN_END_ENCODED,
+
     // Leave this at the end
     MAX_ID
   };
 };
+
+/// \brief Get a vector of all type ids
+ARROW_EXPORT std::vector<Type::type> AllTypeIds();
 
 /// \defgroup type-factories Factory functions for creating data types
 ///
@@ -547,6 +558,10 @@ ARROW_EXPORT std::shared_ptr<DataType> time64(TimeUnit::type unit);
 ARROW_EXPORT std::shared_ptr<DataType> struct_(
     const std::vector<std::shared_ptr<Field>>& fields);
 
+/// \brief Create a RunEndEncodedType instance
+ARROW_EXPORT std::shared_ptr<DataType> run_end_encoded(
+    std::shared_ptr<DataType> run_end_type, std::shared_ptr<DataType> value_type);
+
 /// \brief Create a SparseUnionType instance
 ARROW_EXPORT std::shared_ptr<DataType> sparse_union(FieldVector child_fields,
                                                     std::vector<int8_t> type_codes = {});
@@ -627,5 +642,7 @@ std::shared_ptr<Schema> schema(
 
 /// Return the process-wide default memory pool.
 ARROW_EXPORT MemoryPool* default_memory_pool();
+
+constexpr int64_t kDefaultBufferAlignment = 64;
 
 }  // namespace arrow

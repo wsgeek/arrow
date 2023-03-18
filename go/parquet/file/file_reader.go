@@ -25,10 +25,10 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/apache/arrow/go/v10/arrow/memory"
-	"github.com/apache/arrow/go/v10/parquet"
-	"github.com/apache/arrow/go/v10/parquet/internal/encryption"
-	"github.com/apache/arrow/go/v10/parquet/metadata"
+	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v12/parquet"
+	"github.com/apache/arrow/go/v12/parquet/internal/encryption"
+	"github.com/apache/arrow/go/v12/parquet/metadata"
 	"golang.org/x/xerrors"
 )
 

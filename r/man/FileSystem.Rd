@@ -55,6 +55,10 @@ in the background, without blocking (default \code{TRUE})
 buckets if \verb{$CreateDir()} is called on the bucket level (default \code{FALSE}).
 \item \code{allow_bucket_deletion}: logical, if TRUE, the filesystem will delete
 buckets if\verb{$DeleteDir()} is called on the bucket level (default \code{FALSE}).
+\item \code{request_timeout}: Socket read time on Windows and MacOS in seconds. If
+negative, the AWS SDK default (typically 3 seconds).
+\item \code{connect_timeout}: Socket connection timeout in seconds. If negative, AWS
+SDK default is used (typically 1 second).
 }
 
 \code{GcsFileSystem$create()} optionally takes arguments:
@@ -63,8 +67,8 @@ buckets if\verb{$DeleteDir()} is called on the bucket level (default \code{FALSE
 credentials using standard GCS configuration methods.
 \item \code{access_token}: optional string for authentication. Should be provided along
 with \code{expiration}
-\item \code{expiration}: optional date representing point at which \code{access_token} will
-expire.
+\item \code{expiration}: \code{POSIXct}. optional datetime representing point at which
+\code{access_token} will expire.
 \item \code{json_credentials}: optional string for authentication. Point to a JSON
 credentials file downloaded from GCS.
 \item \code{endpoint_override}: if non-empty, will connect to provided host name / port,

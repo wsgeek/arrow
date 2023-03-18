@@ -122,6 +122,11 @@ struct ScalarHashImpl {
     return Status::OK();
   }
 
+  Status Visit(const RunEndEncodedScalar& s) {
+    AccumulateHashFrom(*s.value);
+    return Status::OK();
+  }
+
   Status Visit(const ExtensionScalar& s) {
     AccumulateHashFrom(*s.value);
     return Status::OK();
@@ -435,6 +440,27 @@ struct ScalarValidateImpl {
     }
   }
 
+  Status Visit(const RunEndEncodedScalar& s) {
+    const auto& ree_type = checked_cast<const RunEndEncodedType&>(*s.type);
+    if (!s.value) {
+      return Status::Invalid(s.type->ToString(), " scalar doesn't have storage value");
+    }
+    if (!s.is_valid && s.value->is_valid) {
+      return Status::Invalid("null ", s.type->ToString(),
+                             " scalar has non-null storage value");
+    }
+    if (s.is_valid && !s.value->is_valid) {
+      return Status::Invalid("non-null ", s.type->ToString(),
+                             " scalar has null storage value");
+    }
+    if (!ree_type.value_type()->Equals(*s.value->type)) {
+      return Status::Invalid(
+          ree_type.ToString(), " scalar should have an underlying value of type ",
+          ree_type.value_type()->ToString(), ", got ", s.value->type->ToString());
+    }
+    return ValidateValue(s, *s.value);
+  }
+
   Status Visit(const ExtensionScalar& s) {
     if (!s.value) {
       return Status::Invalid(s.type->ToString(), " scalar doesn't have storage value");
@@ -442,7 +468,6 @@ struct ScalarValidateImpl {
     if (!s.is_valid && s.value->is_valid) {
       return Status::Invalid("null ", s.type->ToString(),
                              " scalar has non-null storage value");
-      return Status::OK();
     }
     if (s.is_valid && !s.value->is_valid) {
       return Status::Invalid("non-null ", s.type->ToString(),
@@ -583,6 +608,19 @@ Result<std::shared_ptr<Scalar>> StructScalar::field(FieldRef ref) const {
   }
 }
 
+RunEndEncodedScalar::RunEndEncodedScalar(std::shared_ptr<Scalar> value,
+                                         std::shared_ptr<DataType> type)
+    : Scalar{std::move(type), value->is_valid}, value{std::move(value)} {
+  ARROW_CHECK_EQ(this->type->id(), Type::RUN_END_ENCODED);
+}
+
+RunEndEncodedScalar::RunEndEncodedScalar(const std::shared_ptr<DataType>& type)
+    : RunEndEncodedScalar(
+          MakeNullScalar(checked_cast<const RunEndEncodedType&>(*type).value_type()),
+          type) {}
+
+RunEndEncodedScalar::~RunEndEncodedScalar() = default;
+
 DictionaryScalar::DictionaryScalar(std::shared_ptr<DataType> type)
     : internal::PrimitiveScalarBase(std::move(type)),
       value{MakeNullScalar(checked_cast<const DictionaryType&>(*this->type).index_type()),
@@ -644,6 +682,15 @@ std::shared_ptr<DictionaryScalar> DictionaryScalar::Make(std::shared_ptr<Scalar>
   auto is_valid = index->is_valid;
   return std::make_shared<DictionaryScalar>(ValueType{std::move(index), std::move(dict)},
                                             std::move(type), is_valid);
+}
+
+Result<TimestampScalar> TimestampScalar::FromISO8601(std::string_view iso8601,
+                                                     TimeUnit::type unit) {
+  ValueType value;
+  if (internal::ParseTimestampISO8601(iso8601.data(), iso8601.size(), unit, &value)) {
+    return TimestampScalar{value, timestamp(unit)};
+  }
+  return Status::Invalid("Couldn't parse ", iso8601, " as a timestamp");
 }
 
 SparseUnionScalar::SparseUnionScalar(ValueType value, int8_t type_code,
@@ -757,6 +804,11 @@ struct MakeNullImpl {
     }
     out_ = std::make_shared<DenseUnionScalar>(MakeNullScalar(type.field(0)->type()),
                                               type.type_codes()[0], type_);
+    return Status::OK();
+  }
+
+  Status Visit(const RunEndEncodedType& type) {
+    out_ = std::make_shared<RunEndEncodedScalar>(type_);
     return Status::OK();
   }
 
@@ -997,8 +1049,12 @@ Status CastImpl(const StringScalar& from, ScalarType* to) {
   return Status::OK();
 }
 
-// binary to string
-Status CastImpl(const BinaryScalar& from, StringScalar* to) {
+// binary/large binary/large string to string
+template <typename ScalarType>
+enable_if_t<std::is_base_of_v<BaseBinaryScalar, ScalarType> &&
+                !std::is_same<ScalarType, StringScalar>::value,
+            Status>
+CastImpl(const ScalarType& from, StringScalar* to) {
   to->value = from.value;
   return Status::OK();
 }

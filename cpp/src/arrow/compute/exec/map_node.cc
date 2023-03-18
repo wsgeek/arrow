@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "arrow/compute/exec.h"
-#include "arrow/compute/exec/expression.h"
+#include "arrow/compute/expression.h"
 #include "arrow/result.h"
 #include "arrow/status.h"
 #include "arrow/util/logging.h"
@@ -34,36 +34,27 @@ namespace arrow {
 namespace compute {
 
 MapNode::MapNode(ExecPlan* plan, std::vector<ExecNode*> inputs,
-                 std::shared_ptr<Schema> output_schema, bool async_mode)
+                 std::shared_ptr<Schema> output_schema)
     : ExecNode(plan, std::move(inputs), /*input_labels=*/{"target"},
-               std::move(output_schema),
-               /*num_outputs=*/1) {
-  if (async_mode) {
-    executor_ = plan_->exec_context()->executor();
-  } else {
-    executor_ = nullptr;
-  }
-}
+               std::move(output_schema)),
+      TracedNode(this) {}
 
-void MapNode::ErrorReceived(ExecNode* input, Status error) {
+Status MapNode::InputFinished(ExecNode* input, int total_batches) {
   DCHECK_EQ(input, inputs_[0]);
-  EVENT(span_, "ErrorReceived", {{"error.message", error.message()}});
-  outputs_[0]->ErrorReceived(this, std::move(error));
-}
-
-void MapNode::InputFinished(ExecNode* input, int total_batches) {
-  DCHECK_EQ(input, inputs_[0]);
-  EVENT(span_, "InputFinished", {{"batches.length", total_batches}});
-  outputs_[0]->InputFinished(this, total_batches);
+  EVENT_ON_CURRENT_SPAN("InputFinished", {{"batches.length", total_batches}});
+  ARROW_RETURN_NOT_OK(output_->InputFinished(this, total_batches));
   if (input_counter_.SetTotal(total_batches)) {
     this->Finish();
   }
+  return Status::OK();
 }
 
+// Right now this assumes the map operation will always maintain ordering.  This
+// may change in the future but is true for the current map nodes (filter/project)
+const Ordering& MapNode::ordering() const { return inputs_[0]->ordering(); }
+
 Status MapNode::StartProducing() {
-  START_COMPUTE_SPAN(
-      span_, std::string(kind_name()) + ":" + label(),
-      {{"node.label", label()}, {"node.detail", ToString()}, {"node.kind", kind_name()}});
+  NoteStartProducing(ToStringExtra());
   return Status::OK();
 }
 
@@ -75,57 +66,24 @@ void MapNode::ResumeProducing(ExecNode* output, int32_t counter) {
   inputs_[0]->ResumeProducing(this, counter);
 }
 
-void MapNode::StopProducing(ExecNode* output) {
-  DCHECK_EQ(output, outputs_[0]);
-  StopProducing();
-}
+Status MapNode::StopProducingImpl() { return Status::OK(); }
 
-void MapNode::StopProducing() {
-  EVENT(span_, "StopProducing");
-  if (executor_) {
-    this->stop_source_.RequestStop();
-  }
-  if (input_counter_.Cancel()) {
-    this->Finish();
-  }
-  inputs_[0]->StopProducing(this);
-}
-
-void MapNode::SubmitTask(std::function<Result<ExecBatch>(ExecBatch)> map_fn,
-                         ExecBatch batch) {
-  Status status;
-  // This will be true if the node is stopped early due to an error or manual
-  // cancellation
-  if (input_counter_.Completed()) {
-    return;
-  }
-  auto task = [this, map_fn, batch]() {
-    auto guarantee = batch.guarantee;
-    auto output_batch = map_fn(std::move(batch));
-    if (ErrorIfNotOk(output_batch.status())) {
-      return output_batch.status();
-    }
-    output_batch->guarantee = guarantee;
-    outputs_[0]->InputReceived(this, output_batch.MoveValueUnsafe());
-    return Status::OK();
-  };
-
-  status = task();
-  if (!status.ok()) {
-    if (input_counter_.Cancel()) {
-      this->Finish(status);
-    }
-    inputs_[0]->StopProducing(this);
-    return;
-  }
+Status MapNode::InputReceived(ExecNode* input, ExecBatch batch) {
+  auto scope = TraceInputReceived(batch);
+  DCHECK_EQ(input, inputs_[0]);
+  compute::Expression guarantee = batch.guarantee;
+  int64_t index = batch.index;
+  ARROW_ASSIGN_OR_RAISE(auto output_batch, ProcessBatch(std::move(batch)));
+  output_batch.guarantee = guarantee;
+  output_batch.index = index;
+  ARROW_RETURN_NOT_OK(output_->InputReceived(this, std::move(output_batch)));
   if (input_counter_.Increment()) {
     this->Finish();
   }
+  return Status::OK();
 }
 
-void MapNode::Finish(Status finish_st /*= Status::OK()*/) {
-  this->finished_.MarkFinished(finish_st);
-}
+void MapNode::Finish() {}
 
 }  // namespace compute
 }  // namespace arrow

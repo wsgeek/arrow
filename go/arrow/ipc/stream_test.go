@@ -22,9 +22,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/apache/arrow/go/v10/arrow/internal/arrdata"
-	"github.com/apache/arrow/go/v10/arrow/internal/flatbuf"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow/internal/arrdata"
+	"github.com/apache/arrow/go/v12/arrow/internal/flatbuf"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
 func TestStream(t *testing.T) {

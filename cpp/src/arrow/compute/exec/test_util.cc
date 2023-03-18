@@ -38,6 +38,7 @@
 #include "arrow/compute/exec/util.h"
 #include "arrow/compute/function_internal.h"
 #include "arrow/datum.h"
+#include "arrow/io/interfaces.h"
 #include "arrow/record_batch.h"
 #include "arrow/table.h"
 #include "arrow/testing/builder.h"
@@ -58,25 +59,24 @@ namespace compute {
 namespace {
 
 struct DummyNode : ExecNode {
-  DummyNode(ExecPlan* plan, NodeVector inputs, int num_outputs,
+  DummyNode(ExecPlan* plan, NodeVector inputs, bool is_sink,
             StartProducingFunc start_producing, StopProducingFunc stop_producing)
-      : ExecNode(plan, std::move(inputs), {}, dummy_schema(), num_outputs),
+      : ExecNode(plan, std::move(inputs), {}, (is_sink) ? nullptr : dummy_schema()),
         start_producing_(std::move(start_producing)),
         stop_producing_(std::move(stop_producing)) {
     input_labels_.resize(inputs_.size());
     for (size_t i = 0; i < input_labels_.size(); ++i) {
       input_labels_[i] = std::to_string(i);
     }
-    finished_.MarkFinished();
   }
 
   const char* kind_name() const override { return "Dummy"; }
 
-  void InputReceived(ExecNode* input, ExecBatch batch) override {}
+  Status InputReceived(ExecNode* input, ExecBatch batch) override { return Status::OK(); }
 
-  void ErrorReceived(ExecNode* input, Status error) override {}
-
-  void InputFinished(ExecNode* input, int total_batches) override {}
+  Status InputFinished(ExecNode* input, int total_batches) override {
+    return Status::OK();
+  }
 
   Status StartProducing() override {
     if (start_producing_) {
@@ -87,36 +87,24 @@ struct DummyNode : ExecNode {
   }
 
   void PauseProducing(ExecNode* output, int32_t counter) override {
-    ASSERT_GE(num_outputs(), 0) << "Sink nodes should not experience backpressure";
+    ASSERT_NE(output_, nullptr) << "Sink nodes should not experience backpressure";
     AssertIsOutput(output);
   }
 
   void ResumeProducing(ExecNode* output, int32_t counter) override {
-    ASSERT_GE(num_outputs(), 0) << "Sink nodes should not experience backpressure";
+    ASSERT_NE(output_, nullptr) << "Sink nodes should not experience backpressure";
     AssertIsOutput(output);
   }
 
-  void StopProducing(ExecNode* output) override {
-    EXPECT_GE(num_outputs(), 0) << "Sink nodes should not experience backpressure";
-    AssertIsOutput(output);
-  }
-
-  void StopProducing() override {
-    if (started_) {
-      for (const auto& input : inputs_) {
-        input->StopProducing(this);
-      }
-      if (stop_producing_) {
-        stop_producing_(this);
-      }
+  Status StopProducingImpl() override {
+    if (stop_producing_) {
+      stop_producing_(this);
     }
+    return Status::OK();
   }
 
  private:
-  void AssertIsOutput(ExecNode* output) {
-    auto it = std::find(outputs_.begin(), outputs_.end(), output);
-    ASSERT_NE(it, outputs_.end());
-  }
+  void AssertIsOutput(ExecNode* output) { ASSERT_EQ(output->output(), nullptr); }
 
   std::shared_ptr<Schema> dummy_schema() const {
     return schema({field("dummy", null())});
@@ -131,10 +119,10 @@ struct DummyNode : ExecNode {
 }  // namespace
 
 ExecNode* MakeDummyNode(ExecPlan* plan, std::string label, std::vector<ExecNode*> inputs,
-                        int num_outputs, StartProducingFunc start_producing,
+                        bool is_sink, StartProducingFunc start_producing,
                         StopProducingFunc stop_producing) {
   auto node =
-      plan->EmplaceNode<DummyNode>(plan, std::move(inputs), num_outputs,
+      plan->EmplaceNode<DummyNode>(plan, std::move(inputs), is_sink,
                                    std::move(start_producing), std::move(stop_producing));
   if (!label.empty()) {
     node->SetLabel(std::move(label));
@@ -174,24 +162,109 @@ ExecBatch ExecBatchFromJSON(const std::vector<TypeHolder>& types,
 
 Future<> StartAndFinish(ExecPlan* plan) {
   RETURN_NOT_OK(plan->Validate());
-  RETURN_NOT_OK(plan->StartProducing());
+  plan->StartProducing();
   return plan->finished();
 }
 
 Future<std::vector<ExecBatch>> StartAndCollect(
     ExecPlan* plan, AsyncGenerator<std::optional<ExecBatch>> gen) {
   RETURN_NOT_OK(plan->Validate());
-  RETURN_NOT_OK(plan->StartProducing());
+  plan->StartProducing();
 
   auto collected_fut = CollectAsyncGenerator(gen);
 
-  return AllComplete({plan->finished(), Future<>(collected_fut)})
+  return AllFinished({plan->finished(), Future<>(collected_fut)})
       .Then([collected_fut]() -> Result<std::vector<ExecBatch>> {
         ARROW_ASSIGN_OR_RAISE(auto collected, collected_fut.result());
         return ::arrow::internal::MapVector(
-            [](std::optional<ExecBatch> batch) { return std::move(*batch); },
+            [](std::optional<ExecBatch> batch) { return batch.value_or(ExecBatch()); },
             std::move(collected));
       });
+}
+
+namespace {
+
+Result<ExecBatch> MakeIntegerBatch(const std::vector<std::function<int64_t(int)>>& gens,
+                                   const std::shared_ptr<Schema>& schema,
+                                   int batch_start_row, int batch_size) {
+  int n_fields = schema->num_fields();
+  if (gens.size() != static_cast<size_t>(n_fields)) {
+    return Status::Invalid("mismatching generator-vector and schema size");
+  }
+  auto memory_pool = default_memory_pool();
+  std::vector<Datum> values(n_fields);
+  for (int f = 0; f < n_fields; f++) {
+    std::shared_ptr<Array> array;
+    auto type = schema->field(f)->type();
+
+#define ARROW_TEST_INT_BUILD_CASE(id)                                         \
+  case Type::id: {                                                            \
+    using T = typename TypeIdTraits<Type::id>::Type;                          \
+    using CType = typename TypeTraits<T>::CType;                              \
+    using Builder = typename TypeTraits<T>::BuilderType;                      \
+    ARROW_ASSIGN_OR_RAISE(auto a_builder, MakeBuilder(type, memory_pool));    \
+    Builder& builder = *checked_cast<Builder*>(a_builder.get());              \
+    ARROW_RETURN_NOT_OK(builder.Reserve(batch_size));                         \
+    for (int j = 0; j < batch_size; j++) {                                    \
+      builder.UnsafeAppend(static_cast<CType>(gens[f](batch_start_row + j))); \
+    }                                                                         \
+    ARROW_RETURN_NOT_OK(builder.Finish(&array));                              \
+    break;                                                                    \
+  }
+
+    switch (type->id()) {
+      ARROW_TEST_INT_BUILD_CASE(INT8)
+      ARROW_TEST_INT_BUILD_CASE(INT16)
+      ARROW_TEST_INT_BUILD_CASE(INT32)
+      ARROW_TEST_INT_BUILD_CASE(INT64)
+      default:
+        return Status::TypeError("building ", type->ToString());
+    }
+
+#undef ARROW_TEST_INT_BUILD_CASE
+
+    values[f] = Datum(array);
+  }
+  return ExecBatch(std::move(values), batch_size);
+}
+
+}  // namespace
+
+AsyncGenerator<std::optional<ExecBatch>> MakeIntegerBatchGen(
+    const std::vector<std::function<int64_t(int)>>& gens,
+    const std::shared_ptr<Schema>& schema, int num_batches, int batch_size) {
+  struct IntegerBatchGenState {
+    IntegerBatchGenState(const std::vector<std::function<int64_t(int)>>& gens,
+                         const std::shared_ptr<Schema>& schema, int num_batches,
+                         int batch_size)
+        : gens(gens), schema(schema), num_batches(num_batches), batch_size(batch_size) {}
+
+    std::optional<ExecBatch> Next() {
+      if (batch_index >= num_batches) {
+        return std::nullopt;
+      }
+      Result<ExecBatch> batch_res = MakeIntegerBatch(gens, schema, batch_row, batch_size);
+      if (!batch_res.ok()) {
+        return std::nullopt;
+      }
+      ++batch_index;
+      batch_row += batch_size;
+      return batch_res.ValueOrDie();
+    }
+
+    std::vector<std::function<int64_t(int)>> gens;
+    std::shared_ptr<Schema> schema;
+    int num_batches;
+    int batch_size;
+    int batch_index = 0;
+    int batch_row = 0;
+  };
+  auto state =
+      std::make_shared<IntegerBatchGenState>(gens, schema, num_batches, batch_size);
+  return [state]() {
+    return DeferNotOk(::arrow::io::default_io_context().executor()->Submit(
+        [state]() { return state->Next(); }));
+  };
 }
 
 BatchesWithSchema MakeBasicBatches() {
@@ -218,19 +291,33 @@ BatchesWithSchema MakeNestedBatches() {
 }
 
 BatchesWithSchema MakeRandomBatches(const std::shared_ptr<Schema>& schema,
-                                    int num_batches, int batch_size) {
+                                    int num_batches, int batch_size, int64_t alignment,
+                                    MemoryPool* memory_pool) {
   BatchesWithSchema out;
 
   random::RandomArrayGenerator rng(42);
   out.batches.resize(num_batches);
 
   for (int i = 0; i < num_batches; ++i) {
-    out.batches[i] = ExecBatch(*rng.BatchOf(schema->fields(), batch_size));
-    // add a tag scalar to ensure the batches are unique
-    out.batches[i].values.emplace_back(i);
+    out.batches[i] =
+        ExecBatch(*rng.BatchOf(schema->fields(), batch_size, alignment, memory_pool));
   }
 
   out.schema = schema;
+  return out;
+}
+
+Result<BatchesWithSchema> MakeIntegerBatches(
+    const std::vector<std::function<int64_t(int)>>& gens,
+    const std::shared_ptr<Schema>& schema, int num_batches, int batch_size) {
+  BatchesWithSchema out;
+  out.schema = schema;
+  int row = 0;
+  for (int i = 0; i < num_batches; i++) {
+    ARROW_ASSIGN_OR_RAISE(auto batch, MakeIntegerBatch(gens, schema, row, batch_size));
+    out.batches.push_back(std::move(batch));
+    row += batch_size;
+  }
   return out;
 }
 
@@ -258,18 +345,61 @@ BatchesWithSchema MakeBatchesFromString(const std::shared_ptr<Schema>& schema,
   return out_batches;
 }
 
+Result<std::vector<std::shared_ptr<ArrayVector>>> ToArrayVectors(
+    const BatchesWithSchema& batches_with_schema) {
+  std::vector<std::shared_ptr<ArrayVector>> arrayvecs;
+  for (auto batch : batches_with_schema.batches) {
+    ARROW_ASSIGN_OR_RAISE(auto record_batch,
+                          batch.ToRecordBatch(batches_with_schema.schema));
+    arrayvecs.push_back(std::make_shared<ArrayVector>(record_batch->columns()));
+  }
+  return arrayvecs;
+}
+
+Result<std::vector<std::shared_ptr<ExecBatch>>> ToExecBatches(
+    const BatchesWithSchema& batches_with_schema) {
+  std::vector<std::shared_ptr<ExecBatch>> exec_batches;
+  for (auto batch : batches_with_schema.batches) {
+    exec_batches.push_back(std::make_shared<ExecBatch>(batch));
+  }
+  return exec_batches;
+}
+
+Result<std::vector<std::shared_ptr<RecordBatch>>> ToRecordBatches(
+    const BatchesWithSchema& batches_with_schema) {
+  std::vector<std::shared_ptr<RecordBatch>> record_batches;
+  for (auto batch : batches_with_schema.batches) {
+    ARROW_ASSIGN_OR_RAISE(auto record_batch,
+                          batch.ToRecordBatch(batches_with_schema.schema));
+    record_batches.push_back(std::move(record_batch));
+  }
+  return record_batches;
+}
+
+Result<std::shared_ptr<RecordBatchReader>> ToRecordBatchReader(
+    const BatchesWithSchema& batches_with_schema) {
+  std::vector<std::shared_ptr<RecordBatch>> record_batches;
+  for (auto batch : batches_with_schema.batches) {
+    ARROW_ASSIGN_OR_RAISE(auto record_batch,
+                          batch.ToRecordBatch(batches_with_schema.schema));
+    record_batches.push_back(std::move(record_batch));
+  }
+  ARROW_ASSIGN_OR_RAISE(auto table, Table::FromRecordBatches(std::move(record_batches)));
+  return std::make_shared<arrow::TableBatchReader>(std::move(table));
+}
+
 Result<std::shared_ptr<Table>> SortTableOnAllFields(const std::shared_ptr<Table>& tab) {
   std::vector<SortKey> sort_keys;
-  for (auto&& f : tab->schema()->fields()) {
-    sort_keys.emplace_back(f->name());
+  for (int i = 0; i < tab->num_columns(); i++) {
+    sort_keys.emplace_back(i);
   }
   ARROW_ASSIGN_OR_RAISE(auto sort_ids, SortIndices(tab, SortOptions(sort_keys)));
   ARROW_ASSIGN_OR_RAISE(auto tab_sorted, Take(tab, sort_ids));
   return tab_sorted.table();
 }
 
-void AssertTablesEqual(const std::shared_ptr<Table>& exp,
-                       const std::shared_ptr<Table>& act) {
+void AssertTablesEqualIgnoringOrder(const std::shared_ptr<Table>& exp,
+                                    const std::shared_ptr<Table>& act) {
   ASSERT_EQ(exp->num_columns(), act->num_columns());
   if (exp->num_rows() == 0) {
     ASSERT_EQ(exp->num_rows(), act->num_rows());
@@ -282,12 +412,27 @@ void AssertTablesEqual(const std::shared_ptr<Table>& exp,
   }
 }
 
+void AssertExecBatchesEqualIgnoringOrder(const std::shared_ptr<Schema>& schema,
+                                         const std::vector<ExecBatch>& exp,
+                                         const std::vector<ExecBatch>& act) {
+  ASSERT_OK_AND_ASSIGN(auto exp_tab, TableFromExecBatches(schema, exp));
+  ASSERT_OK_AND_ASSIGN(auto act_tab, TableFromExecBatches(schema, act));
+  AssertTablesEqualIgnoringOrder(exp_tab, act_tab);
+}
+
 void AssertExecBatchesEqual(const std::shared_ptr<Schema>& schema,
                             const std::vector<ExecBatch>& exp,
                             const std::vector<ExecBatch>& act) {
   ASSERT_OK_AND_ASSIGN(auto exp_tab, TableFromExecBatches(schema, exp));
   ASSERT_OK_AND_ASSIGN(auto act_tab, TableFromExecBatches(schema, act));
-  AssertTablesEqual(exp_tab, act_tab);
+  AssertTablesEqual(*exp_tab, *act_tab);
+}
+
+void AssertExecBatchesSequenced(const std::vector<ExecBatch>& batches) {
+  int expected_index = 0;
+  for (const auto& batch : batches) {
+    ASSERT_EQ(expected_index++, batch.index);
+  }
 }
 
 template <typename T>
@@ -384,7 +529,19 @@ static inline void PrintToImpl(const std::string& factory_name,
       *os << "function=" << agg.function << "<";
       if (agg.options) PrintTo(*agg.options, os);
       *os << ">,";
-      *os << "target=" << agg.target.ToString() << ",";
+      *os << "target=";
+      if (agg.target.size() == 0) {
+        *os << "*";
+      } else if (agg.target.size() == 1) {
+        *os << agg.target[0].ToString();
+      } else {
+        *os << "(" << agg.target[0].ToString();
+        for (size_t i = 1; i < agg.target.size(); i++) {
+          *os << "," << agg.target[i].ToString();
+        }
+        *os << ")";
+      }
+      *os << ",";
       *os << "name=" << agg.name;
     }
     *os << "},";

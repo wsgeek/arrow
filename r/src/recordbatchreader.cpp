@@ -33,6 +33,13 @@ void RecordBatchReader__Close(const std::shared_ptr<arrow::RecordBatchReader>& r
 }
 
 // [[arrow::export]]
+void RecordBatchReader__UnsafeDelete(
+    const std::shared_ptr<arrow::RecordBatchReader>& reader) {
+  auto& reader_unsafe = const_cast<std::shared_ptr<arrow::RecordBatchReader>&>(reader);
+  reader_unsafe.reset();
+}
+
+// [[arrow::export]]
 std::shared_ptr<arrow::RecordBatch> RecordBatchReader__ReadNext(
     const std::shared_ptr<arrow::RecordBatchReader>& reader) {
   std::shared_ptr<arrow::RecordBatch> batch;
@@ -70,7 +77,7 @@ class RFunctionRecordBatchReader : public arrow::RecordBatchReader {
 
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch_out) {
     auto batch = SafeCallIntoR<std::shared_ptr<arrow::RecordBatch>>([&]() {
-      cpp11::sexp result_sexp = fun_();
+      cpp11::sexp result_sexp = cpp11::function(fun_)();
       if (result_sexp == R_NilValue) {
         return std::shared_ptr<arrow::RecordBatch>(nullptr);
       } else if (!Rf_inherits(result_sexp, "RecordBatch")) {
@@ -94,7 +101,7 @@ class RFunctionRecordBatchReader : public arrow::RecordBatchReader {
   }
 
  private:
-  cpp11::function fun_;
+  cpp11::sexp fun_;
   std::shared_ptr<arrow::Schema> schema_;
 };
 
@@ -128,12 +135,12 @@ class RecordBatchReaderHead : public arrow::RecordBatchReader {
  public:
   RecordBatchReaderHead(std::shared_ptr<arrow::RecordBatchReader> reader,
                         int64_t num_rows)
-      : schema_(reader->schema()), reader_(reader), num_rows_(num_rows) {}
+      : done_(false), schema_(reader->schema()), reader_(reader), num_rows_(num_rows) {}
 
   std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
 
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch_out) override {
-    if (!reader_) {
+    if (done_) {
       // Close() has been called
       batch_out = nullptr;
       return arrow::Status::OK();
@@ -161,16 +168,17 @@ class RecordBatchReaderHead : public arrow::RecordBatchReader {
   }
 
   arrow::Status Close() override {
-    if (reader_) {
-      arrow::Status result = reader_->Close();
-      reader_.reset();
-      return result;
-    } else {
+    if (done_) {
       return arrow::Status::OK();
+    } else {
+      done_ = true;
+      arrow::Status result = reader_->Close();
+      return result;
     }
   }
 
  private:
+  bool done_;
   std::shared_ptr<arrow::Schema> schema_;
   std::shared_ptr<arrow::RecordBatchReader> reader_;
   int64_t num_rows_;

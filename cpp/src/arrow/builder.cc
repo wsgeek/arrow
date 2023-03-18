@@ -42,14 +42,16 @@ using arrow::internal::checked_cast;
 // exact_index_type case below, to reduce build time and memory usage.
 class ARROW_EXPORT TypeErasedIntBuilder : public ArrayBuilder {
  public:
-  explicit TypeErasedIntBuilder(MemoryPool* pool = default_memory_pool())
-      : ArrayBuilder(pool) {
+  explicit TypeErasedIntBuilder(MemoryPool* pool = default_memory_pool(),
+                                int64_t alignment = kDefaultBufferAlignment)
+      : ArrayBuilder(pool, alignment) {
     // Not intended to be used, but adding this is easier than adding a bunch of enable_if
     // magic to builder_dict.h
     DCHECK(false);
   }
   explicit TypeErasedIntBuilder(const std::shared_ptr<DataType>& type,
-                                MemoryPool* pool = default_memory_pool())
+                                MemoryPool* pool = default_memory_pool(),
+                                int64_t alignment = kDefaultBufferAlignment)
       : ArrayBuilder(pool), type_id_(type->id()) {
     DCHECK(is_integer(type_id_));
     switch (type_id_) {
@@ -247,6 +249,14 @@ struct MakeBuilderImpl {
   Status Visit(const DenseUnionType&) {
     ARROW_ASSIGN_OR_RAISE(auto field_builders, FieldBuilders(*type, pool));
     out.reset(new DenseUnionBuilder(pool, std::move(field_builders), type));
+    return Status::OK();
+  }
+
+  Status Visit(const RunEndEncodedType& ree_type) {
+    ARROW_ASSIGN_OR_RAISE(auto run_end_builder, ChildBuilder(ree_type.run_end_type()));
+    ARROW_ASSIGN_OR_RAISE(auto value_builder, ChildBuilder(ree_type.value_type()));
+    out.reset(new RunEndEncodedBuilder(pool, std::move(run_end_builder),
+                                       std::move(value_builder), type));
     return Status::OK();
   }
 

@@ -17,7 +17,6 @@
 package ipc
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -27,14 +26,14 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/bitutil"
-	"github.com/apache/arrow/go/v10/arrow/internal"
-	"github.com/apache/arrow/go/v10/arrow/internal/debug"
-	"github.com/apache/arrow/go/v10/arrow/internal/dictutils"
-	"github.com/apache/arrow/go/v10/arrow/internal/flatbuf"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/bitutil"
+	"github.com/apache/arrow/go/v12/arrow/internal"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/internal/dictutils"
+	"github.com/apache/arrow/go/v12/arrow/internal/flatbuf"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
 type swriter struct {
@@ -81,11 +80,12 @@ type Writer struct {
 	mem memory.Allocator
 	pw  PayloadWriter
 
-	started    bool
-	schema     *arrow.Schema
-	mapper     dictutils.Mapper
-	codec      flatbuf.CompressionType
-	compressNP int
+	started         bool
+	schema          *arrow.Schema
+	mapper          dictutils.Mapper
+	codec           flatbuf.CompressionType
+	compressNP      int
+	minSpaceSavings *float64
 
 	// map of the last written dictionaries by id
 	// so we can avoid writing the same dictionary over and over
@@ -99,11 +99,13 @@ type Writer struct {
 func NewWriterWithPayloadWriter(pw PayloadWriter, opts ...Option) *Writer {
 	cfg := newConfig(opts...)
 	return &Writer{
-		mem:        cfg.alloc,
-		pw:         pw,
-		schema:     cfg.schema,
-		codec:      cfg.codec,
-		compressNP: cfg.compressNP,
+		mem:             cfg.alloc,
+		pw:              pw,
+		schema:          cfg.schema,
+		codec:           cfg.codec,
+		compressNP:      cfg.compressNP,
+		minSpaceSavings: cfg.minSpaceSavings,
+		emitDictDeltas:  cfg.emitDictDeltas,
 	}
 }
 
@@ -111,11 +113,12 @@ func NewWriterWithPayloadWriter(pw PayloadWriter, opts ...Option) *Writer {
 func NewWriter(w io.Writer, opts ...Option) *Writer {
 	cfg := newConfig(opts...)
 	return &Writer{
-		w:      w,
-		mem:    cfg.alloc,
-		pw:     &swriter{w: w},
-		schema: cfg.schema,
-		codec:  cfg.codec,
+		w:              w,
+		mem:            cfg.alloc,
+		pw:             &swriter{w: w},
+		schema:         cfg.schema,
+		codec:          cfg.codec,
+		emitDictDeltas: cfg.emitDictDeltas,
 	}
 }
 
@@ -166,7 +169,7 @@ func (w *Writer) Write(rec arrow.Record) (err error) {
 	const allow64b = true
 	var (
 		data = Payload{msg: MessageRecordBatch}
-		enc  = newRecordEncoder(w.mem, 0, kMaxNestingDepth, allow64b, w.codec, w.compressNP)
+		enc  = newRecordEncoder(w.mem, 0, kMaxNestingDepth, allow64b, w.codec, w.compressNP, w.minSpaceSavings)
 	)
 	defer data.Release()
 
@@ -300,22 +303,34 @@ type recordEncoder struct {
 	fields []fieldMetadata
 	meta   []bufferMetadata
 
-	depth      int64
-	start      int64
-	allow64b   bool
-	codec      flatbuf.CompressionType
-	compressNP int
+	depth           int64
+	start           int64
+	allow64b        bool
+	codec           flatbuf.CompressionType
+	compressNP      int
+	minSpaceSavings *float64
 }
 
-func newRecordEncoder(mem memory.Allocator, startOffset, maxDepth int64, allow64b bool, codec flatbuf.CompressionType, compressNP int) *recordEncoder {
+func newRecordEncoder(mem memory.Allocator, startOffset, maxDepth int64, allow64b bool, codec flatbuf.CompressionType, compressNP int, minSpaceSavings *float64) *recordEncoder {
 	return &recordEncoder{
-		mem:        mem,
-		start:      startOffset,
-		depth:      maxDepth,
-		allow64b:   allow64b,
-		codec:      codec,
-		compressNP: compressNP,
+		mem:             mem,
+		start:           startOffset,
+		depth:           maxDepth,
+		allow64b:        allow64b,
+		codec:           codec,
+		compressNP:      compressNP,
+		minSpaceSavings: minSpaceSavings,
 	}
+}
+
+func (w *recordEncoder) shouldCompress(uncompressed, compressed int) bool {
+	debug.Assert(uncompressed > 0, "uncompressed size is 0")
+	if w.minSpaceSavings == nil {
+		return true
+	}
+
+	savings := 1.0 - float64(compressed)/float64(uncompressed)
+	return savings >= *w.minSpaceSavings
 }
 
 func (w *recordEncoder) reset() {
@@ -328,19 +343,35 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 		if p.body[idx] == nil || p.body[idx].Len() == 0 {
 			return nil
 		}
-		var buf bytes.Buffer
-		buf.Grow(codec.MaxCompressedLen(p.body[idx].Len()) + arrow.Int64SizeBytes)
-		if err := binary.Write(&buf, binary.LittleEndian, uint64(p.body[idx].Len())); err != nil {
-			return err
-		}
-		codec.Reset(&buf)
-		if _, err := codec.Write(p.body[idx].Bytes()); err != nil {
+
+		buf := memory.NewResizableBuffer(w.mem)
+		buf.Reserve(codec.MaxCompressedLen(p.body[idx].Len()) + arrow.Int64SizeBytes)
+
+		binary.LittleEndian.PutUint64(buf.Buf(), uint64(p.body[idx].Len()))
+		bw := &bufferWriter{buf: buf, pos: arrow.Int64SizeBytes}
+		codec.Reset(bw)
+
+		n, err := codec.Write(p.body[idx].Bytes())
+		if err != nil {
 			return err
 		}
 		if err := codec.Close(); err != nil {
 			return err
 		}
-		p.body[idx] = memory.NewBufferBytes(buf.Bytes())
+
+		finalLen := bw.pos
+		compressedLen := bw.pos - arrow.Int64SizeBytes
+		if !w.shouldCompress(n, compressedLen) {
+			n = copy(buf.Buf()[arrow.Int64SizeBytes:], p.body[idx].Bytes())
+			// size of -1 indicates to the reader that the body
+			// doesn't need to be decompressed
+			var noprefix int64 = -1
+			binary.LittleEndian.PutUint64(buf.Buf(), uint64(noprefix))
+			finalLen = n + arrow.Int64SizeBytes
+		}
+		bw.buf.Resize(finalLen)
+		p.body[idx].Release()
+		p.body[idx] = buf
 		return nil
 	}
 
@@ -400,7 +431,6 @@ func (w *recordEncoder) compressBodyBuffers(p *Payload) error {
 }
 
 func (w *recordEncoder) encode(p *Payload, rec arrow.Record) error {
-
 	// perform depth-first traversal of the row-batch
 	for i, col := range rec.Columns() {
 		err := w.visit(p, col)
@@ -410,6 +440,14 @@ func (w *recordEncoder) encode(p *Payload, rec arrow.Record) error {
 	}
 
 	if w.codec != -1 {
+		if w.minSpaceSavings != nil {
+			pct := *w.minSpaceSavings
+			if pct < 0 || pct > 1 {
+				p.Release()
+				return fmt.Errorf("%w: minSpaceSavings not in range [0,1]. Provided %.05f",
+					arrow.ErrInvalid, pct)
+			}
+		}
 		w.compressBodyBuffers(p)
 	}
 
@@ -647,44 +685,7 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 			}
 		}
 		w.depth++
-	case *arrow.MapType:
-		arr := arr.(*array.Map)
-		voffsets, err := w.getZeroBasedValueOffsets(arr)
-		if err != nil {
-			return fmt.Errorf("could not retrieve zero-based value offsets for array %T: %w", arr, err)
-		}
-		p.body = append(p.body, voffsets)
-
-		w.depth--
-		var (
-			values        = arr.ListValues()
-			mustRelease   = false
-			values_offset int64
-			values_length int64
-		)
-		defer func() {
-			if mustRelease {
-				values.Release()
-			}
-		}()
-
-		if voffsets != nil {
-			values_offset = int64(arr.Offsets()[0])
-			values_length = int64(arr.Offsets()[arr.Len()]) - values_offset
-		}
-
-		if len(arr.Offsets()) != 0 || values_length < int64(values.Len()) {
-			// must also slice the values
-			values = array.NewSlice(values, values_offset, values_length)
-			mustRelease = true
-		}
-		err = w.visit(p, values)
-
-		if err != nil {
-			return fmt.Errorf("could not visit list element for array %T: %w", arr, err)
-		}
-		w.depth++
-	case *arrow.ListType, *arrow.LargeListType:
+	case *arrow.MapType, *arrow.ListType, *arrow.LargeListType:
 		arr := arr.(array.ListLike)
 		voffsets, err := w.getZeroBasedValueOffsets(arr)
 		if err != nil {
@@ -697,7 +698,7 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 			values        = arr.ListValues()
 			mustRelease   = false
 			values_offset int64
-			values_length int64
+			values_end    int64
 		)
 		defer func() {
 			if mustRelease {
@@ -707,13 +708,12 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 
 		if arr.Len() > 0 && voffsets != nil {
 			values_offset, _ = arr.ValueOffsets(0)
-			_, values_length = arr.ValueOffsets(arr.Len() - 1)
-			values_length -= values_offset
+			_, values_end = arr.ValueOffsets(arr.Len() - 1)
 		}
 
-		if arr.Len() != 0 || values_length < int64(values.Len()) {
+		if arr.Len() != 0 || values_end < int64(values.Len()) {
 			// must also slice the values
-			values = array.NewSlice(values, values_offset, values_length)
+			values = array.NewSlice(values, values_offset, values_end)
 			mustRelease = true
 		}
 		err = w.visit(p, values)
@@ -739,6 +739,21 @@ func (w *recordEncoder) visit(p *Payload, arr arrow.Array) error {
 
 		if err != nil {
 			return fmt.Errorf("could not visit list element for array %T: %w", arr, err)
+		}
+		w.depth++
+
+	case *arrow.RunEndEncodedType:
+		arr := arr.(*array.RunEndEncoded)
+		w.depth--
+		child := arr.LogicalRunEndsArray(w.mem)
+		defer child.Release()
+		if err := w.visit(p, child); err != nil {
+			return err
+		}
+		child = arr.LogicalValuesArray()
+		defer child.Release()
+		if err := w.visit(p, child); err != nil {
+			return err
 		}
 		w.depth++
 

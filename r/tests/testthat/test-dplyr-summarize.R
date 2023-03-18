@@ -298,20 +298,21 @@ test_that("n_distinct() on dataset", {
 })
 
 test_that("Functions that take ... but we only accept a single arg", {
-  compare_dplyr_binding(
-    .input %>%
-      summarize(distinct = n_distinct()) %>%
-      collect(),
-    tbl,
-    warning = "0 arguments"
+  # With zero arguments, n_distinct() will error in dplyr 1.1.0 too,
+  # so use a Dataset to avoid the "pulling data into R" step that would
+  # trigger a dplyr error
+  skip_if_not_available("dataset")
+  expect_snapshot(
+    InMemoryDataset$create(tbl) %>%
+      summarize(distinct = n_distinct()),
+    error = TRUE
   )
-  compare_dplyr_binding(
-    .input %>%
-      summarize(distinct = n_distinct(int, lgl)) %>%
-      collect(),
-    tbl,
-    warning = "Multiple arguments"
+
+  expect_snapshot_warning(
+    as_record_batch(tbl) %>%
+      summarize(distinct = n_distinct(int, lgl))
   )
+
   # Now that we've demonstrated that the whole machinery works, let's test
   # the agg_funcs directly
   expect_error(call_binding_agg("n_distinct"), "n_distinct() with 0 arguments", fixed = TRUE)
@@ -738,6 +739,19 @@ test_that("Do things after summarize", {
   )
 })
 
+test_that("Non-field variable references in aggregations", {
+  tab <- arrow_table(x = 1:5)
+  scale_factor <- 10
+  expect_identical(
+    tab %>%
+      summarize(value = sum(x) / scale_factor) %>%
+      collect(),
+    tab %>%
+      summarize(value = sum(x) / 10) %>%
+      collect()
+  )
+})
+
 test_that("Expressions on aggregations", {
   # This is what it effectively is
   compare_dplyr_binding(
@@ -1105,12 +1119,20 @@ test_that("We don't add unnecessary ProjectNodes when aggregating", {
     1
   )
 
-  # 0 Projections only if
+  # 0 Projections if
   # (a) input only contains the col you're aggregating, and
   # (b) the output col name is the same as the input name, and
   # (c) no grouping
   expect_project_nodes(
     tab[, "int"] %>% summarize(int = mean(int, na.rm = TRUE)),
+    0
+  )
+
+  # 0 Projections if
+  # (a) only nullary functions in summarize()
+  # (b) no grouping
+  expect_project_nodes(
+    tab[, "int"] %>% summarize(n()),
     0
   )
 

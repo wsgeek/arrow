@@ -17,27 +17,32 @@
 
 #include "arrow/engine/substrait/serde.h"
 
+#include <cstdint>
+#include <type_traits>
 #include <utility>
-
-#include "arrow/buffer.h"
-#include "arrow/compute/exec/exec_plan.h"
-#include "arrow/compute/exec/expression.h"
-#include "arrow/compute/exec/options.h"
-#include "arrow/dataset/file_base.h"
-#include "arrow/engine/substrait/expression_internal.h"
-#include "arrow/engine/substrait/extension_set.h"
-#include "arrow/engine/substrait/plan_internal.h"
-#include "arrow/engine/substrait/relation_internal.h"
-#include "arrow/engine/substrait/type_fwd.h"
-#include "arrow/engine/substrait/type_internal.h"
-#include "arrow/type.h"
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/message.h>
+#include <google/protobuf/stubs/status.h>
 #include <google/protobuf/util/json_util.h>
 #include <google/protobuf/util/message_differencer.h>
+#include <google/protobuf/util/type_resolver.h>
 #include <google/protobuf/util/type_resolver_util.h>
+
+#include "arrow/buffer.h"
+#include "arrow/compute/exec/exec_plan.h"
+#include "arrow/compute/exec/options.h"
+#include "arrow/compute/expression.h"
+#include "arrow/dataset/file_base.h"
+#include "arrow/engine/substrait/expression_internal.h"
+#include "arrow/engine/substrait/extension_set.h"
+#include "arrow/engine/substrait/plan_internal.h"
+#include "arrow/engine/substrait/relation.h"
+#include "arrow/engine/substrait/relation_internal.h"
+#include "arrow/engine/substrait/type_fwd.h"
+#include "arrow/engine/substrait/type_internal.h"
+#include "arrow/type.h"
 
 namespace arrow {
 namespace engine {
@@ -108,22 +113,6 @@ DeclarationFactory MakeConsumingSinkDeclarationFactory(
   };
 }
 
-compute::Declaration ProjectByNamesDeclaration(compute::Declaration input,
-                                               std::vector<std::string> names) {
-  int names_size = static_cast<int>(names.size());
-  if (names_size == 0) {
-    return input;
-  }
-  std::vector<compute::Expression> expressions;
-  for (int i = 0; i < names_size; i++) {
-    expressions.push_back(compute::field_ref(FieldRef(i)));
-  }
-  return compute::Declaration::Sequence(
-      {std::move(input),
-       {"project",
-        compute::ProjectNodeOptions{std::move(expressions), std::move(names)}}});
-}
-
 DeclarationFactory MakeWriteDeclarationFactory(
     const WriteOptionsFactory& write_options_factory) {
   return [&write_options_factory](
@@ -133,11 +122,13 @@ DeclarationFactory MakeWriteDeclarationFactory(
     if (options == nullptr) {
       return Status::Invalid("write options factory is exhausted");
     }
-    compute::Declaration projected = ProjectByNamesDeclaration(input, names);
     return compute::Declaration::Sequence(
-        {std::move(projected), {"write", std::move(*options)}});
+        {std::move(input), {"write", std::move(*options)}});
   };
 }
+
+constexpr uint32_t kMinimumMajorVersion = 0;
+constexpr uint32_t kMinimumMinorVersion = 20;
 
 Result<std::vector<compute::Declaration>> DeserializePlans(
     const Buffer& buf, DeclarationFactory declaration_factory,
@@ -145,7 +136,14 @@ Result<std::vector<compute::Declaration>> DeserializePlans(
     const ConversionOptions& conversion_options) {
   ARROW_ASSIGN_OR_RAISE(auto plan, ParseFromBuffer<substrait::Plan>(buf));
 
-  ARROW_ASSIGN_OR_RAISE(auto ext_set, GetExtensionSetFromPlan(plan, registry));
+  if (plan.version().major_number() < kMinimumMajorVersion &&
+      plan.version().minor_number() < kMinimumMinorVersion) {
+    return Status::Invalid("Can only parse plans with a version >= ",
+                           kMinimumMajorVersion, ".", kMinimumMinorVersion);
+  }
+
+  ARROW_ASSIGN_OR_RAISE(auto ext_set,
+                        GetExtensionSetFromPlan(plan, conversion_options, registry));
 
   std::vector<compute::Declaration> sink_decls;
   for (const substrait::PlanRel& plan_rel : plan.relations()) {
@@ -187,6 +185,47 @@ Result<std::vector<compute::Declaration>> DeserializePlans(
     const ConversionOptions& conversion_options) {
   return DeserializePlans(buf, MakeWriteDeclarationFactory(write_options_factory),
                           registry, ext_set_out, conversion_options);
+}
+
+ARROW_ENGINE_EXPORT Result<PlanInfo> DeserializePlan(
+    const Buffer& buf, const ExtensionIdRegistry* registry, ExtensionSet* ext_set_out,
+    const ConversionOptions& conversion_options) {
+  ARROW_ASSIGN_OR_RAISE(auto plan, ParseFromBuffer<substrait::Plan>(buf));
+
+  if (plan.version().major_number() < kMinimumMajorVersion &&
+      plan.version().minor_number() < kMinimumMinorVersion) {
+    return Status::Invalid("Can only parse plans with a version >= ",
+                           kMinimumMajorVersion, ".", kMinimumMinorVersion);
+  }
+
+  ARROW_ASSIGN_OR_RAISE(auto ext_set,
+                        GetExtensionSetFromPlan(plan, conversion_options, registry));
+
+  if (plan.relations_size() == 0) {
+    return Status::Invalid("Plan has no relations");
+  }
+  if (plan.relations_size() > 1) {
+    return Status::NotImplemented("Common sub-plans");
+  }
+  const substrait::PlanRel& root_rel = plan.relations(0);
+
+  ARROW_ASSIGN_OR_RAISE(
+      auto decl_info,
+      FromProto(root_rel.has_root() ? root_rel.root().input() : root_rel.rel(), ext_set,
+                conversion_options));
+
+  std::vector<std::string> names;
+  if (root_rel.has_root()) {
+    names.assign(root_rel.root().names().begin(), root_rel.root().names().end());
+    ARROW_ASSIGN_OR_RAISE(decl_info.output_schema,
+                          decl_info.output_schema->WithNames(names));
+  }
+
+  if (ext_set_out) {
+    *ext_set_out = std::move(ext_set);
+  }
+
+  return PlanInfo{std::move(decl_info), std::move(names)};
 }
 
 namespace {
@@ -357,7 +396,8 @@ inline google::protobuf::util::TypeResolver* GetGeneratedTypeResolver() {
 }
 
 Result<std::shared_ptr<Buffer>> SubstraitFromJSON(std::string_view type_name,
-                                                  std::string_view json) {
+                                                  std::string_view json,
+                                                  bool ignore_unknown_fields) {
   std::string type_url = "/substrait." + std::string(type_name);
 
   google::protobuf::io::ArrayInputStream json_stream{json.data(),
@@ -366,7 +406,7 @@ Result<std::shared_ptr<Buffer>> SubstraitFromJSON(std::string_view type_name,
   std::string out;
   google::protobuf::io::StringOutputStream out_stream{&out};
   google::protobuf::util::JsonParseOptions json_opts;
-  json_opts.ignore_unknown_fields = true;
+  json_opts.ignore_unknown_fields = ignore_unknown_fields;
   auto status = google::protobuf::util::JsonToBinaryStream(
       GetGeneratedTypeResolver(), type_url, &json_stream, &out_stream,
       std::move(json_opts));
