@@ -42,44 +42,38 @@ RunEndEncodedArray::RunEndEncodedArray(const std::shared_ptr<DataType>& type,
 }
 
 Result<std::shared_ptr<RunEndEncodedArray>> RunEndEncodedArray::Make(
+    const std::shared_ptr<DataType>& type, int64_t logical_length,
+    const std::shared_ptr<Array>& run_ends, const std::shared_ptr<Array>& values,
+    int64_t logical_offset) {
+  if (type->id() != Type::RUN_END_ENCODED) {
+    return Status::Invalid("Type must be RUN_END_ENCODED");
+  }
+  const auto* ree_type = internal::checked_cast<const RunEndEncodedType*>(type.get());
+  RETURN_NOT_OK(ree_util::ValidateRunEndEncodedChildren(
+      *ree_type, logical_length, run_ends->data(), values->data(), 0, logical_offset));
+  return std::make_shared<RunEndEncodedArray>(type, logical_length, run_ends, values,
+                                              logical_offset);
+}
+
+Result<std::shared_ptr<RunEndEncodedArray>> RunEndEncodedArray::Make(
     int64_t logical_length, const std::shared_ptr<Array>& run_ends,
     const std::shared_ptr<Array>& values, int64_t logical_offset) {
   auto run_end_type = run_ends->type();
-  auto values_type = values->type();
+  auto value_type = values->type();
   if (!RunEndEncodedType::RunEndTypeValid(*run_end_type)) {
     return Status::Invalid("Run end type must be int16, int32 or int64");
   }
-  if (run_ends->null_count() != 0) {
-    return Status::Invalid("Run ends array cannot contain null values");
-  }
-  if (values->length() < run_ends->length()) {
-    return Status::Invalid("Values array has to be at least as long as run ends array");
-  }
-
-  return std::make_shared<RunEndEncodedArray>(
-      run_end_encoded(std::move(run_end_type), std::move(values_type)), logical_length,
-      run_ends, values, logical_offset);
+  auto ree_type = run_end_encoded(std::move(run_end_type), std::move(value_type));
+  return Make(ree_type, logical_length, run_ends, values, logical_offset);
 }
 
 void RunEndEncodedArray::SetData(const std::shared_ptr<ArrayData>& data) {
   ARROW_CHECK_EQ(data->type->id(), Type::RUN_END_ENCODED);
   const auto* ree_type =
       internal::checked_cast<const RunEndEncodedType*>(data->type.get());
+  ARROW_CHECK_EQ(data->child_data.size(), 2);
   ARROW_CHECK_EQ(ree_type->run_end_type()->id(), data->child_data[0]->type->id());
   ARROW_CHECK_EQ(ree_type->value_type()->id(), data->child_data[1]->type->id());
-
-  DCHECK_EQ(data->child_data.size(), 2);
-
-  // A non-zero number of logical values in this array (offset + length) implies
-  // a non-zero number of runs and values.
-  DCHECK(data->offset + data->length == 0 || data->child_data[0]->length > 0);
-  DCHECK(data->offset + data->length == 0 || data->child_data[1]->length > 0);
-  // At least as many values as run_ends
-  DCHECK_GE(data->child_data[1]->length, data->child_data[0]->length);
-
-  // The null count for run-end encoded arrays is always 0. Actual number of
-  // nulls needs to be calculated through other means.
-  DCHECK_EQ(data->null_count, 0);
 
   Array::SetData(data);
   run_ends_array_ = MakeArray(this->data()->child_data[0]);

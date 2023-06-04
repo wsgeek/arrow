@@ -85,6 +85,7 @@ class ARROW_EXPORT RunEndEncodeOptions : public FunctionOptions {
  public:
   explicit RunEndEncodeOptions(std::shared_ptr<DataType> run_end_type = int32());
   static constexpr char const kTypeName[] = "RunEndEncodeOptions";
+  static RunEndEncodeOptions Defaults() { return RunEndEncodeOptions(); }
 
   std::shared_ptr<DataType> run_end_type;
 };
@@ -106,8 +107,16 @@ class ARROW_EXPORT SortOptions : public FunctionOptions {
  public:
   explicit SortOptions(std::vector<SortKey> sort_keys = {},
                        NullPlacement null_placement = NullPlacement::AtEnd);
+  explicit SortOptions(const Ordering& ordering);
   static constexpr char const kTypeName[] = "SortOptions";
   static SortOptions Defaults() { return SortOptions(); }
+  /// Convenience constructor to create an ordering from SortOptions
+  ///
+  /// Note: Both classes contain the exact same information.  However,
+  /// sort_options should only be used in a "function options" context while Ordering
+  /// is used more generally.
+  Ordering AsOrdering() && { return Ordering(std::move(sort_keys), null_placement); }
+  Ordering AsOrdering() const& { return Ordering(sort_keys, null_placement); }
 
   /// Column key(s) to order by and how to order by these sort keys.
   std::vector<SortKey> sort_keys;
@@ -204,10 +213,8 @@ class ARROW_EXPORT PartitionNthOptions : public FunctionOptions {
 /// \brief Options for cumulative sum function
 class ARROW_EXPORT CumulativeSumOptions : public FunctionOptions {
  public:
-  explicit CumulativeSumOptions(double start = 0, bool skip_nulls = false,
-                                bool check_overflow = false);
-  explicit CumulativeSumOptions(std::shared_ptr<Scalar> start, bool skip_nulls = false,
-                                bool check_overflow = false);
+  explicit CumulativeSumOptions(double start = 0, bool skip_nulls = false);
+  explicit CumulativeSumOptions(std::shared_ptr<Scalar> start, bool skip_nulls = false);
   static constexpr char const kTypeName[] = "CumulativeSumOptions";
   static CumulativeSumOptions Defaults() { return CumulativeSumOptions(); }
 
@@ -217,9 +224,6 @@ class ARROW_EXPORT CumulativeSumOptions : public FunctionOptions {
   /// If true, nulls in the input are ignored and produce a corresponding null output.
   /// When false, the first null encountered is propagated through the remaining output.
   bool skip_nulls = false;
-
-  /// When true, returns an Invalid Status when overflow is detected
-  bool check_overflow = false;
 };
 
 /// @}
@@ -569,8 +573,10 @@ Result<Datum> DictionaryEncode(
 /// \since 12.0.0
 /// \note API not yet finalized
 ARROW_EXPORT
-Result<Datum> RunEndEncode(const Datum& value, const RunEndEncodeOptions& options,
-                           ExecContext* ctx = NULLPTR);
+Result<Datum> RunEndEncode(
+    const Datum& value,
+    const RunEndEncodeOptions& options = RunEndEncodeOptions::Defaults(),
+    ExecContext* ctx = NULLPTR);
 
 /// \brief Decode a Run-End Encoded array to a plain array
 ///
@@ -586,11 +592,18 @@ Result<Datum> RunEndEncode(const Datum& value, const RunEndEncodeOptions& option
 ARROW_EXPORT
 Result<Datum> RunEndDecode(const Datum& value, ExecContext* ctx = NULLPTR);
 
+/// \brief Compute the cumulative sum of an array-like object
+///
+/// \param[in] values array-like input
+/// \param[in] options configures cumulative sum behavior
+/// \param[in] check_overflow whether to check for overflow, if true, return Invalid
+/// status on overflow, otherwise wrap around on overflow
+/// \param[in] ctx the function execution context, optional
 ARROW_EXPORT
 Result<Datum> CumulativeSum(
     const Datum& values,
     const CumulativeSumOptions& options = CumulativeSumOptions::Defaults(),
-    ExecContext* ctx = NULLPTR);
+    bool check_overflow = false, ExecContext* ctx = NULLPTR);
 
 // ----------------------------------------------------------------------
 // Deprecated functions
