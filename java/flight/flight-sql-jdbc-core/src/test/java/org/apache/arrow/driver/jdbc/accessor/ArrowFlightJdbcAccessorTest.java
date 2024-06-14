@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.driver.jdbc.accessor;
 
 import static org.mockito.Mockito.verify;
@@ -25,7 +24,6 @@ import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,8 +36,7 @@ public class ArrowFlightJdbcAccessorTest {
   static class MockedArrowFlightJdbcAccessor extends ArrowFlightJdbcAccessor {
 
     protected MockedArrowFlightJdbcAccessor() {
-      super(() -> 0, (boolean wasNull) -> {
-      });
+      super(() -> 0, (boolean wasNull) -> {});
     }
 
     @Override
@@ -48,8 +45,7 @@ public class ArrowFlightJdbcAccessorTest {
     }
   }
 
-  @Mock
-  MockedArrowFlightJdbcAccessor accessor;
+  @Mock MockedArrowFlightJdbcAccessor accessor;
 
   @Test
   public void testShouldGetObjectWithByteClassReturnGetByte() throws SQLException {
@@ -123,7 +119,7 @@ public class ArrowFlightJdbcAccessorTest {
 
     when(accessor.getObject(Boolean.class)).thenCallRealMethod();
 
-    Assert.assertEquals(accessor.getObject(Boolean.class), true);
+    Assert.assertEquals(true, accessor.getObject(Boolean.class));
     verify(accessor).getBoolean();
   }
 
@@ -134,7 +130,7 @@ public class ArrowFlightJdbcAccessorTest {
 
     when(accessor.getObject(BigDecimal.class)).thenCallRealMethod();
 
-    Assert.assertEquals(accessor.getObject(BigDecimal.class), expected);
+    Assert.assertEquals(expected, accessor.getObject(BigDecimal.class));
     verify(accessor).getBigDecimal();
   }
 
@@ -145,7 +141,7 @@ public class ArrowFlightJdbcAccessorTest {
 
     when(accessor.getObject(String.class)).thenCallRealMethod();
 
-    Assert.assertEquals(accessor.getObject(String.class), expected);
+    Assert.assertEquals(expected, accessor.getObject(String.class));
     verify(accessor).getString();
   }
 
@@ -167,7 +163,7 @@ public class ArrowFlightJdbcAccessorTest {
 
     when(accessor.getObject(Object.class)).thenCallRealMethod();
 
-    Assert.assertEquals(accessor.getObject(Object.class), expected);
+    Assert.assertEquals(expected, accessor.getObject(Object.class));
     verify(accessor).getObject();
   }
 

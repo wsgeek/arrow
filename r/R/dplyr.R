@@ -316,8 +316,8 @@ ensure_group_vars <- function(x) {
     if (length(gv)) {
       # Add them back
       x$selected_columns <- c(
-        x$selected_columns,
-        make_field_refs(gv)
+        make_field_refs(gv),
+        x$selected_columns
       )
     }
   }
@@ -336,22 +336,6 @@ ensure_arrange_vars <- function(x) {
   # columns in x$group_by_vars which *are* returned in the result.
   x$temp_columns <- x$arrange_vars[!names(x$arrange_vars) %in% names(x$selected_columns)]
   x
-}
-
-# Helper to handle unsupported dplyr features
-# * For Table/RecordBatch, we collect() and then call the dplyr method in R
-# * For Dataset, we just error
-abandon_ship <- function(call, .data, msg) {
-  msg <- trimws(msg)
-  dplyr_fun_name <- sub("^(.*?)\\..*", "\\1", as.character(call[[1]]))
-  if (query_on_dataset(.data)) {
-    stop(msg, "\nCall collect() first to pull data into R.", call. = FALSE)
-  }
-  # else, collect and call dplyr method
-  warning(msg, "; pulling data into R", immediate. = TRUE, call. = FALSE)
-  call$.data <- dplyr::collect(.data)
-  call[[1]] <- get(dplyr_fun_name, envir = asNamespace("dplyr"))
-  eval.parent(call, 2)
 }
 
 query_on_dataset <- function(x) {

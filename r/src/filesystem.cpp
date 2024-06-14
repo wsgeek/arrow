@@ -239,13 +239,6 @@ std::string fs___FileSystem__type_name(
 }
 
 // [[arrow::export]]
-std::shared_ptr<fs::LocalFileSystem> fs___LocalFileSystem__create() {
-  // Affects OpenInputFile/OpenInputStream
-  auto io_context = MainRThread::GetInstance().CancellableIOContext();
-  return std::make_shared<fs::LocalFileSystem>(io_context);
-}
-
-// [[arrow::export]]
 std::shared_ptr<fs::SubTreeFileSystem> fs___SubTreeFileSystem__create(
     const std::string& base_path, const std::shared_ptr<fs::FileSystem>& base_fs) {
   return std::make_shared<fs::SubTreeFileSystem>(base_path, base_fs);
@@ -268,9 +261,10 @@ cpp11::writable::list fs___FileSystemFromUri(const std::string& path) {
   using cpp11::literals::operator"" _nm;
 
   std::string out_path;
-  return cpp11::writable::list(
-      {"fs"_nm = cpp11::to_r6(ValueOrStop(fs::FileSystemFromUri(path, &out_path))),
-       "path"_nm = out_path});
+  auto io_context = MainRThread::GetInstance().CancellableIOContext();
+  return cpp11::writable::list({"fs"_nm = cpp11::to_r6(ValueOrStop(
+                                    fs::FileSystemFromUri(path, io_context, &out_path))),
+                                "path"_nm = out_path});
 }
 
 // [[arrow::export]]
@@ -425,6 +419,15 @@ std::shared_ptr<fs::GcsFileSystem> fs___GcsFileSystem__Make(bool anonymous,
     gcs_opts.default_metadata = strings_to_kvm(options["default_metadata"]);
   }
 
+  // /// \brief The project to use for creating buckets.
+  // ///
+  // /// If not set, the library uses the GOOGLE_CLOUD_PROJECT environment
+  // /// variable. Most I/O operations do not need a project id, only applications
+  // /// that create new buckets need a project id.
+  if (!Rf_isNull(options["project_id"])) {
+    gcs_opts.project_id = cpp11::as_cpp<std::string>(options["project_id"]);
+  }
+
   auto io_context = MainRThread::GetInstance().CancellableIOContext();
   // TODO(ARROW-16884): update when this returns Result
   return fs::GcsFileSystem::Make(gcs_opts, io_context);
@@ -485,6 +488,10 @@ cpp11::list fs___GcsFileSystem__options(const std::shared_ptr<fs::GcsFileSystem>
     }
 
     out.push_back({"default_metadata"_nm = metadata});
+  }
+
+  if (opts.project_id.has_value()) {
+    out.push_back({"project_id"_nm = opts.project_id.value()});
   }
 
   return out;

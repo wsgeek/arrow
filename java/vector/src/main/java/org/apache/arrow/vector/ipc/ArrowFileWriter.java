@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.vector.ipc;
 
 import java.io.IOException;
@@ -22,11 +21,13 @@ import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Optional;
+import java.util.Set;
 import org.apache.arrow.util.VisibleForTesting;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.compression.CompressionCodec;
 import org.apache.arrow.vector.compression.CompressionUtil;
+import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.ipc.message.ArrowBlock;
 import org.apache.arrow.vector.ipc.message.ArrowDictionaryBatch;
@@ -38,7 +39,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * {@link ArrowWriter} that writes out a Arrow files (https://arrow.apache.org/docs/format/IPC.html#file-format).
+ * {@link ArrowWriter} that writes out a Arrow files
+ * (https://arrow.apache.org/docs/format/IPC.html#file-format).
  */
 public class ArrowFileWriter extends ArrowWriter {
 
@@ -49,32 +51,61 @@ public class ArrowFileWriter extends ArrowWriter {
   private final List<ArrowBlock> recordBlocks = new ArrayList<>();
 
   private Map<String, String> metaData;
+  private boolean dictionariesWritten = false;
 
-  public ArrowFileWriter(VectorSchemaRoot root, DictionaryProvider provider, WritableByteChannel out) {
+  public ArrowFileWriter(
+      VectorSchemaRoot root, DictionaryProvider provider, WritableByteChannel out) {
     super(root, provider, out);
   }
 
-  public ArrowFileWriter(VectorSchemaRoot root, DictionaryProvider provider, WritableByteChannel out,
+  public ArrowFileWriter(
+      VectorSchemaRoot root,
+      DictionaryProvider provider,
+      WritableByteChannel out,
       Map<String, String> metaData) {
     super(root, provider, out);
     this.metaData = metaData;
   }
 
-  public ArrowFileWriter(VectorSchemaRoot root, DictionaryProvider provider, WritableByteChannel out,
+  public ArrowFileWriter(
+      VectorSchemaRoot root,
+      DictionaryProvider provider,
+      WritableByteChannel out,
       IpcOption option) {
     super(root, provider, out, option);
   }
 
-  public ArrowFileWriter(VectorSchemaRoot root, DictionaryProvider provider, WritableByteChannel out,
-                         Map<String, String> metaData, IpcOption option) {
+  public ArrowFileWriter(
+      VectorSchemaRoot root,
+      DictionaryProvider provider,
+      WritableByteChannel out,
+      Map<String, String> metaData,
+      IpcOption option) {
     super(root, provider, out, option);
     this.metaData = metaData;
   }
 
-  public ArrowFileWriter(VectorSchemaRoot root, DictionaryProvider provider, WritableByteChannel out,
-                         Map<String, String> metaData, IpcOption option, CompressionCodec.Factory compressionFactory,
-                         CompressionUtil.CodecType codecType) {
-    super(root, provider, out, option, compressionFactory, codecType);
+  public ArrowFileWriter(
+      VectorSchemaRoot root,
+      DictionaryProvider provider,
+      WritableByteChannel out,
+      Map<String, String> metaData,
+      IpcOption option,
+      CompressionCodec.Factory compressionFactory,
+      CompressionUtil.CodecType codecType) {
+    this(root, provider, out, metaData, option, compressionFactory, codecType, Optional.empty());
+  }
+
+  public ArrowFileWriter(
+      VectorSchemaRoot root,
+      DictionaryProvider provider,
+      WritableByteChannel out,
+      Map<String, String> metaData,
+      IpcOption option,
+      CompressionCodec.Factory compressionFactory,
+      CompressionUtil.CodecType codecType,
+      Optional<Integer> compressionLevel) {
+    super(root, provider, out, option, compressionFactory, codecType, compressionLevel);
     this.metaData = metaData;
   }
 
@@ -105,7 +136,9 @@ public class ArrowFileWriter extends ArrowWriter {
     out.writeIntLittleEndian(0);
 
     long footerStart = out.getCurrentPosition();
-    out.write(new ArrowFooter(schema, dictionaryBlocks, recordBlocks, metaData, option.metadataVersion), false);
+    out.write(
+        new ArrowFooter(schema, dictionaryBlocks, recordBlocks, metaData, option.metadataVersion),
+        false);
     int footerLength = (int) (out.getCurrentPosition() - footerStart);
     if (footerLength <= 0) {
       throw new InvalidArrowFileException("invalid footer");
@@ -114,6 +147,21 @@ public class ArrowFileWriter extends ArrowWriter {
     LOGGER.debug("Footer starts at {}, length: {}", footerStart, footerLength);
     ArrowMagic.writeMagic(out, false);
     LOGGER.debug("magic written, now at {}", out.getCurrentPosition());
+  }
+
+  @Override
+  protected void ensureDictionariesWritten(DictionaryProvider provider, Set<Long> dictionaryIdsUsed)
+      throws IOException {
+    if (dictionariesWritten) {
+      return;
+    }
+    dictionariesWritten = true;
+    // Write out all dictionaries required.
+    // Replacement dictionaries are not supported in the IPC file format.
+    for (long id : dictionaryIdsUsed) {
+      Dictionary dictionary = provider.lookup(id);
+      writeDictionaryBatch(dictionary);
+    }
   }
 
   @VisibleForTesting

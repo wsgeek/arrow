@@ -21,24 +21,29 @@ import operator
 import sys
 from setuptools import setup, find_packages
 
-if sys.version_info < (3, 7):
-    sys.exit('Python < 3.7 is not supported')
+# pygit2>=1.14.0 requires python 3.9, so crossbow and all
+# both technically require python 3.9 — however we still need to
+# support 3.8 when using docker. When 3.8 is EOLed and we bump
+# to Python 3.9 this will resolve itself.
+if sys.version_info < (3, 8):
+    sys.exit('Python < 3.8 is not supported')
 
 # For pathlib.Path compatibility
 jinja_req = 'jinja2>=2.11'
 
 extras = {
-    'lint': [
-        'numpydoc==1.1.0', 'autopep8', 'flake8', 'cython-lint', 'cmake_format==0.6.13'
-    ],
     'benchmark': ['pandas'],
-    'docker': ['ruamel.yaml', 'python-dotenv'],
-    'release': ['pygithub', jinja_req, 'jira', 'semver', 'gitpython'],
-    'crossbow': ['github3.py', jinja_req, 'pygit2>=1.6.0', 'requests',
-                 'ruamel.yaml', 'setuptools_scm'],
+    'crossbow': ['github3.py', jinja_req, 'pygit2>=1.14.0', 'requests',
+                 'ruamel.yaml', 'setuptools_scm<8.0.0'],
     'crossbow-upload': ['github3.py', jinja_req, 'ruamel.yaml',
                         'setuptools_scm'],
-    'numpydoc': ['numpydoc==1.1.0']
+    'docker': ['ruamel.yaml', 'python-dotenv'],
+    'integration': ['cffi'],
+    'integration-java': ['jpype1'],
+    'lint': ['numpydoc==1.1.0', 'autopep8', 'flake8==6.1.0', 'cython-lint',
+             'cmake_format==0.6.13', 'sphinx-lint==0.9.1'],
+    'numpydoc': ['numpydoc==1.1.0'],
+    'release': ['pygithub', jinja_req, 'jira', 'semver', 'gitpython'],
 }
 extras['bot'] = extras['crossbow'] + ['pygithub', 'jira']
 extras['all'] = list(set(functools.reduce(operator.add, extras.values())))
@@ -52,7 +57,7 @@ setup(
     maintainer_email='dev@arrow.apache.org',
     packages=find_packages(),
     include_package_data=True,
-    python_requires='>=3.7',
+    python_requires='>=3.8',
     install_requires=['click>=7'],
     tests_require=['pytest', 'responses'],
     extras_require=extras,

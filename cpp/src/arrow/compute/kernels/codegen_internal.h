@@ -46,6 +46,7 @@
 #include "arrow/util/decimal.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/macros.h"
+#include "arrow/util/visibility.h"
 #include "arrow/visit_data_inline.h"
 
 namespace arrow {
@@ -198,6 +199,11 @@ template <typename T>
 using is_signed_integer_value =
     std::integral_constant<bool, std::is_integral<T>::value && std::is_signed<T>::value>;
 
+template <typename T>
+using is_integer_value =
+    std::integral_constant<bool, is_signed_integer_value<T>::value ||
+                                     is_unsigned_integer_value<T>::value>;
+
 template <typename T, typename R = T>
 using enable_if_signed_integer_value = enable_if_t<is_signed_integer_value<T>::value, R>;
 
@@ -212,6 +218,9 @@ using enable_if_integer_value =
 
 template <typename T, typename R = T>
 using enable_if_floating_value = enable_if_t<std::is_floating_point<T>::value, R>;
+
+template <typename T, typename R = T>
+using enable_if_not_floating_value = enable_if_t<!std::is_floating_point<T>::value, R>;
 
 template <typename T, typename R = T>
 using enable_if_decimal_value =
@@ -360,43 +369,6 @@ struct UnboxScalar<Decimal256Type> {
   }
 };
 
-template <typename Type, typename Enable = void>
-struct BoxScalar;
-
-template <typename Type>
-struct BoxScalar<Type, enable_if_has_c_type<Type>> {
-  using T = typename GetOutputType<Type>::T;
-  static void Box(T val, Scalar* out) {
-    // Enables BoxScalar<Int64Type> to work on a (for example) Time64Scalar
-    T* mutable_data = reinterpret_cast<T*>(
-        checked_cast<::arrow::internal::PrimitiveScalarBase*>(out)->mutable_data());
-    *mutable_data = val;
-  }
-};
-
-template <typename Type>
-struct BoxScalar<Type, enable_if_base_binary<Type>> {
-  using T = typename GetOutputType<Type>::T;
-  using ScalarType = typename TypeTraits<Type>::ScalarType;
-  static void Box(T val, Scalar* out) {
-    checked_cast<ScalarType*>(out)->value = std::make_shared<Buffer>(val);
-  }
-};
-
-template <>
-struct BoxScalar<Decimal128Type> {
-  using T = Decimal128;
-  using ScalarType = Decimal128Scalar;
-  static void Box(T val, Scalar* out) { checked_cast<ScalarType*>(out)->value = val; }
-};
-
-template <>
-struct BoxScalar<Decimal256Type> {
-  using T = Decimal256;
-  using ScalarType = Decimal256Scalar;
-  static void Box(T val, Scalar* out) { checked_cast<ScalarType*>(out)->value = val; }
-};
-
 // A VisitArraySpanInline variant that calls its visitor function with logical
 // values, such as Decimal128 rather than std::string_view.
 
@@ -451,7 +423,8 @@ static void VisitTwoArrayValuesInline(const ArraySpan& arr0, const ArraySpan& ar
 
 Result<TypeHolder> FirstType(KernelContext*, const std::vector<TypeHolder>& types);
 Result<TypeHolder> LastType(KernelContext*, const std::vector<TypeHolder>& types);
-Result<TypeHolder> ListValuesType(KernelContext*, const std::vector<TypeHolder>& types);
+Result<TypeHolder> ListValuesType(KernelContext* ctx,
+                                  const std::vector<TypeHolder>& types);
 
 // ----------------------------------------------------------------------
 // Helpers for iterating over common DataType instances for adding kernels to
@@ -1334,7 +1307,7 @@ ArrayKernelExec GenerateDecimal(detail::GetTypeId get_id) {
 
 // END of kernel generator-dispatchers
 // ----------------------------------------------------------------------
-
+// BEGIN of DispatchBest helpers
 ARROW_EXPORT
 void EnsureDictionaryDecoded(std::vector<TypeHolder>* types);
 
@@ -1393,6 +1366,11 @@ Status CastDecimalArgs(TypeHolder* begin, size_t count);
 ARROW_EXPORT
 bool HasDecimal(const std::vector<TypeHolder>& types);
 
+ARROW_EXPORT
+void PromoteIntegerForDurationArithmetic(std::vector<TypeHolder>* types);
+
+// END of DispatchBest helpers
+// ----------------------------------------------------------------------
 }  // namespace internal
 }  // namespace compute
 }  // namespace arrow

@@ -33,8 +33,10 @@
 #include "arrow/status.h"
 #include "arrow/table.h"
 #include "arrow/testing/gtest_util.h"
+#include "arrow/testing/matchers.h"
 #include "arrow/testing/random.h"
 #include "arrow/type.h"
+#include "arrow/util/io_util.h"
 #include "arrow/util/key_value_metadata.h"
 
 namespace liborc = orc;
@@ -81,7 +83,8 @@ class MemoryOutputStream : public liborc::OutputStream {
  private:
   std::vector<char> data_;
   std::string name_;
-  uint64_t length_, natural_write_size_;
+  uint64_t length_;
+  const uint64_t natural_write_size_ = 64 * 1024;
 };
 
 std::shared_ptr<Buffer> GenerateFixedDifferenceBuffer(int32_t fixed_length,
@@ -482,9 +485,9 @@ TEST(TestAdapterRead, ReadCharAndVarcharType) {
   writer->add(*batch);
   writer->close();
 
-  std::shared_ptr<io::RandomAccessFile> in_stream(std::make_shared<io::BufferReader>(
-      reinterpret_cast<const uint8_t*>(mem_stream.getData()),
-      static_cast<int64_t>(mem_stream.getLength())));
+  std::shared_ptr<io::RandomAccessFile> in_stream = std::make_shared<io::BufferReader>(
+      std::make_shared<Buffer>(reinterpret_cast<const uint8_t*>(mem_stream.getData()),
+                               mem_stream.getLength()));
   ASSERT_OK_AND_ASSIGN(
       auto reader, adapters::orc::ORCFileReader::Open(in_stream, default_memory_pool()));
   ASSERT_EQ(row_count, reader->NumberOfRows());
@@ -556,9 +559,9 @@ TEST(TestAdapterRead, ReadFieldAttributes) {
   auto writer = CreateWriter(/*stripe_size=*/1024, *orc_type, &mem_stream);
   writer->close();
 
-  std::shared_ptr<io::RandomAccessFile> in_stream(std::make_shared<io::BufferReader>(
-      reinterpret_cast<const uint8_t*>(mem_stream.getData()),
-      static_cast<int64_t>(mem_stream.getLength())));
+  std::shared_ptr<io::RandomAccessFile> in_stream = std::make_shared<io::BufferReader>(
+      std::make_shared<Buffer>(reinterpret_cast<const uint8_t*>(mem_stream.getData()),
+                               mem_stream.getLength()));
   ASSERT_OK_AND_ASSIGN(
       auto reader, adapters::orc::ORCFileReader::Open(in_stream, default_memory_pool()));
   ASSERT_EQ(0, reader->NumberOfRows());
@@ -633,6 +636,23 @@ TEST(TestAdapterReadWrite, FieldAttributesRoundTrip) {
   // Check schema equality with metadata.
   EXPECT_OK_AND_ASSIGN(auto read_schema, reader->ReadSchema());
   AssertSchemaEqual(schema, read_schema, /*check_metadata=*/true);
+}
+
+TEST(TestAdapterReadWrite, ThrowWhenTZDBUnavaiable) {
+  if (adapters::orc::GetOrcMajorVersion() >= 2) {
+    GTEST_SKIP() << "Only ORC pre-2.0.0 versions have the time zone database check";
+  }
+
+  EnvVarGuard tzdir_guard("TZDIR", "/wrong/path");
+  const char* expect_str = "IANA time zone database is unavailable but required by ORC";
+  EXPECT_OK_AND_ASSIGN(auto out_stream, io::BufferOutputStream::Create(1024));
+  EXPECT_THAT(
+      adapters::orc::ORCFileWriter::Open(out_stream.get(), adapters::orc::WriteOptions()),
+      Raises(StatusCode::Invalid, testing::HasSubstr(expect_str)));
+  EXPECT_OK_AND_ASSIGN(auto buffer, out_stream->Finish());
+  EXPECT_THAT(adapters::orc::ORCFileReader::Open(
+                  std::make_shared<io::BufferReader>(buffer), default_memory_pool()),
+              Raises(StatusCode::Invalid, testing::HasSubstr(expect_str)));
 }
 
 // Trivial
@@ -1041,7 +1061,12 @@ std::shared_ptr<Array> FlattenSparseUnionArray(std::shared_ptr<Array> array) {
 void TestUnionConversion(std::shared_ptr<Array> array) {
   auto length = array->length();
   auto orc_type = liborc::Type::buildTypeFromString("uniontype<string,int>");
-  auto orc_batch = orc_type->createRowBatch(array->length(), *liborc::getDefaultPool());
+
+  // Workaround for an unfortunate breaking change introduced by ORC-1.9.0.
+  MemoryOutputStream mem_stream(/*capacity=*/1024);
+  auto writer = CreateWriter(/*stripe_size=*/1024, *orc_type, &mem_stream);
+  auto orc_batch = writer->createRowBatch(length);
+  // auto orc_batch = orc_type->createRowBatch(length, *liborc::getDefaultPool());
 
   // Convert from arrow to orc
   int arrow_chunk_offset = 0;

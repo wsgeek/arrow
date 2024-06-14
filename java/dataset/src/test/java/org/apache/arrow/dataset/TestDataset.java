@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.dataset;
 
 import java.io.IOException;
@@ -26,7 +25,9 @@ import java.util.Spliterators;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
-
+import org.apache.arrow.dataset.file.FileFormat;
+import org.apache.arrow.dataset.file.FileSystemDatasetFactory;
+import org.apache.arrow.dataset.jni.NativeMemoryPool;
 import org.apache.arrow.dataset.scanner.ScanOptions;
 import org.apache.arrow.dataset.scanner.Scanner;
 import org.apache.arrow.dataset.source.Dataset;
@@ -34,14 +35,17 @@ import org.apache.arrow.dataset.source.DatasetFactory;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.util.AutoCloseables;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.VectorLoader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.VectorUnloader;
+import org.apache.arrow.vector.compare.VectorEqualsVisitor;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
-
 
 public abstract class TestDataset {
   private BufferAllocator allocator = null;
@@ -60,7 +64,8 @@ public abstract class TestDataset {
     return allocator;
   }
 
-  protected List<ArrowRecordBatch> collectResultFromFactory(DatasetFactory factory, ScanOptions options) {
+  protected List<ArrowRecordBatch> collectResultFromFactory(
+      DatasetFactory factory, ScanOptions options) {
     final Dataset dataset = factory.finish();
     final Scanner scanner = dataset.newScan(options);
     try {
@@ -100,6 +105,43 @@ public abstract class TestDataset {
     return schema;
   }
 
+  protected void assertParquetFileEquals(String expectedURI, String actualURI) throws Exception {
+    final FileSystemDatasetFactory expectedFactory =
+        new FileSystemDatasetFactory(
+            rootAllocator(), NativeMemoryPool.getDefault(), FileFormat.PARQUET, expectedURI);
+    final FileSystemDatasetFactory actualFactory =
+        new FileSystemDatasetFactory(
+            rootAllocator(), NativeMemoryPool.getDefault(), FileFormat.PARQUET, actualURI);
+    List<ArrowRecordBatch> expectedBatches =
+        collectResultFromFactory(expectedFactory, new ScanOptions(new String[0], 100));
+    List<ArrowRecordBatch> actualBatches =
+        collectResultFromFactory(actualFactory, new ScanOptions(new String[0], 100));
+    try (VectorSchemaRoot expectVsr =
+            VectorSchemaRoot.create(expectedFactory.inspect(), rootAllocator());
+        VectorSchemaRoot actualVsr =
+            VectorSchemaRoot.create(actualFactory.inspect(), rootAllocator())) {
+
+      // fast-fail by comparing metadata
+      Assert.assertEquals(expectedBatches.toString(), actualBatches.toString());
+      // compare ArrowRecordBatches
+      Assert.assertEquals(expectedBatches.size(), actualBatches.size());
+      VectorLoader expectLoader = new VectorLoader(expectVsr);
+      VectorLoader actualLoader = new VectorLoader(actualVsr);
+      for (int i = 0; i < expectedBatches.size(); i++) {
+        expectLoader.load(expectedBatches.get(i));
+        actualLoader.load(actualBatches.get(i));
+        for (int j = 0; j < expectVsr.getFieldVectors().size(); j++) {
+          FieldVector vector = expectVsr.getFieldVectors().get(i);
+          FieldVector otherVector = actualVsr.getFieldVectors().get(i);
+          // TODO: ARROW-18140 Use VectorSchemaRoot#equals() method to compare
+          Assert.assertTrue(VectorEqualsVisitor.vectorEquals(vector, otherVector));
+        }
+      }
+    } finally {
+      AutoCloseables.close(expectedBatches, actualBatches);
+    }
+  }
+
   protected <T> Stream<T> stream(Iterable<T> iterable) {
     return StreamSupport.stream(iterable.spliterator(), false);
   }
@@ -109,7 +151,8 @@ public abstract class TestDataset {
   }
 
   protected <T> Stream<T> stream(Iterator<T> iterator) {
-    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
+    return StreamSupport.stream(
+        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED), false);
   }
 
   protected <T> List<T> collect(Iterator<T> iterator) {

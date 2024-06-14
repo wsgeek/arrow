@@ -14,17 +14,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.dataset.file;
 
-/**
- * File format definitions.
- */
+/** File format definitions. */
 public enum FileFormat {
   PARQUET(0),
   ARROW_IPC(1),
   ORC(2),
   CSV(3),
+  JSON(4),
   NONE(-1);
 
   private final int id;

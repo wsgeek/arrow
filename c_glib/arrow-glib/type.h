@@ -65,9 +65,11 @@ G_BEGIN_DECLS
  * @GARROW_TYPE_DURATION: Measure of elapsed time in either seconds,
  *   milliseconds, microseconds or nanoseconds.
  * @GARROW_TYPE_LARGE_STRING: 64bit offsets UTF-8 variable-length string.
- * @GARROW_TYPE_LARGE_BINARY: 64bit offsets Variable-length bytes (no guarantee of UTF-8-ness).
+ * @GARROW_TYPE_LARGE_BINARY: 64bit offsets Variable-length bytes (no guarantee of
+ * UTF-8-ness).
  * @GARROW_TYPE_LARGE_LIST: A list of some logical data type with 64-bit offsets.
  * @GARROW_TYPE_MONTH_DAY_NANO_INTERVAL: MONTH_DAY_NANO interval in SQL style.
+ * @GARROW_TYPE_RUN_END_ENCODED: Run-end encoded data.
  *
  * They are corresponding to `arrow::Type::type` values.
  */
@@ -110,6 +112,7 @@ typedef enum {
   GARROW_TYPE_LARGE_BINARY,
   GARROW_TYPE_LARGE_LIST,
   GARROW_TYPE_MONTH_DAY_NANO_INTERVAL,
+  GARROW_TYPE_RUN_END_ENCODED,
 } GArrowType;
 
 /**

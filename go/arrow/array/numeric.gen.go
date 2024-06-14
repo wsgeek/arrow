@@ -20,11 +20,12 @@ package array
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
-	"github.com/apache/arrow/go/v13/arrow"
-	"github.com/goccy/go-json"
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/internal/json"
 )
 
 // A type which represents an immutable sequence of int64 values.
@@ -101,7 +102,7 @@ func (a *Int64) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
 		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
+			vals[i] = a.values[i]
 		} else {
 			vals[i] = nil
 		}
@@ -196,7 +197,7 @@ func (a *Uint64) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
 		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
+			vals[i] = a.values[i]
 		} else {
 			vals[i] = nil
 		}
@@ -290,11 +291,23 @@ func (a *Float64) GetOneForMarshal(i int) interface{} {
 func (a *Float64) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
-		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
-		} else {
+		if !a.IsValid(i) {
 			vals[i] = nil
+			continue
 		}
+
+		f := a.Value(i)
+		switch {
+		case math.IsNaN(f):
+			vals[i] = "NaN"
+		case math.IsInf(f, 1):
+			vals[i] = "+Inf"
+		case math.IsInf(f, -1):
+			vals[i] = "-Inf"
+		default:
+			vals[i] = f
+		}
+
 	}
 
 	return json.Marshal(vals)
@@ -386,7 +399,7 @@ func (a *Int32) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
 		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
+			vals[i] = a.values[i]
 		} else {
 			vals[i] = nil
 		}
@@ -481,7 +494,7 @@ func (a *Uint32) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
 		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
+			vals[i] = a.values[i]
 		} else {
 			vals[i] = nil
 		}
@@ -575,10 +588,19 @@ func (a *Float32) GetOneForMarshal(i int) interface{} {
 func (a *Float32) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
-		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
-		} else {
+		if !a.IsValid(i) {
 			vals[i] = nil
+			continue
+		}
+
+		f := a.Value(i)
+		v := strconv.FormatFloat(float64(f), 'g', -1, 32)
+
+		switch v {
+		case "NaN", "+Inf", "-Inf":
+			vals[i] = v
+		default:
+			vals[i] = f
 		}
 	}
 
@@ -671,7 +693,7 @@ func (a *Int16) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
 		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
+			vals[i] = a.values[i]
 		} else {
 			vals[i] = nil
 		}
@@ -766,7 +788,7 @@ func (a *Uint16) MarshalJSON() ([]byte, error) {
 	vals := make([]interface{}, a.Len())
 	for i := 0; i < a.Len(); i++ {
 		if a.IsValid(i) {
-			vals[i] = float64(a.values[i]) // prevent uint8 from being seen as binary data
+			vals[i] = a.values[i]
 		} else {
 			vals[i] = nil
 		}

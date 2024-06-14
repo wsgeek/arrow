@@ -95,6 +95,16 @@ swift/Arrow/.build
 
 # Go dependencies
 go/vendor
+# go debug binaries
+__debug_bin
 
 # direnv
 .envrc
+
+# Develocity
+java/.mvn/.gradle-enterprise/
+java/.mvn/.develocity/
+
+# rat
+filtered_rat.txt
+rat.txt

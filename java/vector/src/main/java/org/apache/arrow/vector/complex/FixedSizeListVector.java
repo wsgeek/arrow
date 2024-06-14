@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.vector.complex;
 
 import static java.util.Collections.singletonList;
@@ -29,7 +28,6 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
-
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
@@ -48,6 +46,7 @@ import org.apache.arrow.vector.ZeroVector;
 import org.apache.arrow.vector.compare.VectorVisitor;
 import org.apache.arrow.vector.complex.impl.UnionFixedSizeListReader;
 import org.apache.arrow.vector.complex.impl.UnionFixedSizeListWriter;
+import org.apache.arrow.vector.complex.reader.FieldReader;
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode;
 import org.apache.arrow.vector.types.Types.MinorType;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -60,7 +59,8 @@ import org.apache.arrow.vector.util.SchemaChangeRuntimeException;
 import org.apache.arrow.vector.util.TransferPair;
 
 /** A ListVector where every list value is of the same size. */
-public class FixedSizeListVector extends BaseValueVector implements BaseListVector, PromotableVector {
+public class FixedSizeListVector extends BaseValueVector
+    implements BaseListVector, PromotableVector {
 
   public static FixedSizeListVector empty(String name, int size, BufferAllocator allocator) {
     FieldType fieldType = FieldType.nullable(new ArrowType.FixedSizeList(size));
@@ -70,8 +70,7 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
   private FieldVector vector;
   private ArrowBuf validityBuffer;
   private final int listSize;
-  private final FieldType fieldType;
-  private final String name;
+  private Field field;
 
   private UnionFixedSizeListReader reader;
   private int valueCount;
@@ -85,17 +84,29 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
    * @param fieldType The underlying data type of the vector.
    * @param unusedSchemaChangeCallback Currently unused.
    */
-  public FixedSizeListVector(String name,
-                             BufferAllocator allocator,
-                             FieldType fieldType,
-                             CallBack unusedSchemaChangeCallback) {
+  public FixedSizeListVector(
+      String name,
+      BufferAllocator allocator,
+      FieldType fieldType,
+      CallBack unusedSchemaChangeCallback) {
+    this(new Field(name, fieldType, null), allocator, unusedSchemaChangeCallback);
+  }
+
+  /**
+   * Creates a new instance.
+   *
+   * @param field The field materialized by this vector.
+   * @param allocator The allocator to use for creating/reallocating buffers for the vector.
+   * @param unusedSchemaChangeCallback Currently unused.
+   */
+  public FixedSizeListVector(
+      Field field, BufferAllocator allocator, CallBack unusedSchemaChangeCallback) {
     super(allocator);
 
-    this.name = name;
+    this.field = field;
     this.validityBuffer = allocator.getEmpty();
     this.vector = ZeroVector.INSTANCE;
-    this.fieldType = fieldType;
-    this.listSize = ((ArrowType.FixedSizeList) fieldType.getType()).getListSize();
+    this.listSize = ((ArrowType.FixedSizeList) field.getFieldType().getType()).getListSize();
     Preconditions.checkArgument(listSize >= 0, "list size must be non-negative");
     this.valueCount = 0;
     this.validityAllocationSizeInBytes = getValidityBufferSizeFromCount(INITIAL_VALUE_ALLOCATION);
@@ -103,8 +114,15 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
   @Override
   public Field getField() {
-    List<Field> children = Collections.singletonList(getDataVector().getField());
-    return new Field(name, fieldType, children);
+    if (field.getChildren().contains(getDataVector().getField())) {
+      return field;
+    }
+    field =
+        new Field(
+            field.getName(),
+            field.getFieldType(),
+            Collections.singletonList(getDataVector().getField()));
+    return field;
   }
 
   @Override
@@ -114,7 +132,7 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
   @Override
   public String getName() {
-    return name;
+    return field.getName();
   }
 
   /** Get the fixed size for each list. */
@@ -124,14 +142,18 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
   @Override
   public void initializeChildrenFromFields(List<Field> children) {
-    checkArgument(children.size() == 1,
-            "Lists have one child Field. Found: %s", children.isEmpty() ? "none" : children);
+    checkArgument(
+        children.size() == 1,
+        "Lists have one child Field. Found: %s",
+        children.isEmpty() ? "none" : children);
 
     Field field = children.get(0);
     AddOrGetResult<FieldVector> addOrGetVector = addOrGetVector(field.getFieldType());
-    checkArgument(addOrGetVector.isCreated(), "Child vector already existed: %s", addOrGetVector.getVector());
+    checkArgument(
+        addOrGetVector.isCreated(), "Child vector already existed: %s", addOrGetVector.getVector());
 
     addOrGetVector.getVector().initializeChildrenFromFields(field.getChildren());
+    this.field = new Field(this.field.getName(), this.field.getFieldType(), children);
   }
 
   @Override
@@ -142,7 +164,8 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
   @Override
   public void loadFieldBuffers(ArrowFieldNode fieldNode, List<ArrowBuf> ownBuffers) {
     if (ownBuffers.size() != 1) {
-      throw new IllegalArgumentException("Illegal buffer count, expected " + 1 + ", got: " + ownBuffers.size());
+      throw new IllegalArgumentException(
+          "Illegal buffer count, expected " + 1 + ", got: " + ownBuffers.size());
     }
 
     ArrowBuf bitBuffer = ownBuffers.get(0);
@@ -171,8 +194,6 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
   /**
    * Get the inner vectors.
    *
-   * @deprecated This API will be removed as the current implementations no longer support inner vectors.
-   *
    * @return the inner vectors for this field as defined by the TypeLayout
    */
   @Deprecated
@@ -182,10 +203,13 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
   }
 
   @Override
+  protected FieldReader getReaderImpl() {
+    return new UnionFixedSizeListReader(this);
+  }
+
+  @Override
   public UnionFixedSizeListReader getReader() {
-    if (reader == null) {
-      reader = new UnionFixedSizeListReader(this);
-    }
+    reader = (UnionFixedSizeListReader) super.getReader();
     return reader;
   }
 
@@ -217,11 +241,9 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     } finally {
       if (!success) {
         clear();
-        return false;
       }
     }
-
-    return true;
+    return success;
   }
 
   private void allocateValidityBuffer(final long size) {
@@ -240,12 +262,12 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
   private void reallocValidityBuffer() {
     final int currentBufferCapacity = checkedCastToInt(validityBuffer.capacity());
-    long newAllocationSize = currentBufferCapacity * 2;
+    long newAllocationSize = currentBufferCapacity * 2L;
     if (newAllocationSize == 0) {
       if (validityAllocationSizeInBytes > 0) {
         newAllocationSize = validityAllocationSizeInBytes;
       } else {
-        newAllocationSize = getValidityBufferSizeFromCount(INITIAL_VALUE_ALLOCATION) * 2;
+        newAllocationSize = getValidityBufferSizeFromCount(INITIAL_VALUE_ALLOCATION) * 2L;
       }
     }
 
@@ -256,7 +278,7 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
       throw new OversizedAllocationException("Unable to expand the buffer");
     }
 
-    final ArrowBuf newBuf = allocator.buffer((int) newAllocationSize);
+    final ArrowBuf newBuf = allocator.buffer(newAllocationSize);
     newBuf.setBytes(0, validityBuffer, 0, currentBufferCapacity);
     newBuf.setZero(currentBufferCapacity, newBuf.capacity() - currentBufferCapacity);
     validityBuffer.getReferenceManager().release(1);
@@ -313,8 +335,8 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     if (valueCount == 0) {
       return 0;
     }
-    return getValidityBufferSizeFromCount(valueCount) +
-            vector.getBufferSizeFor(valueCount * listSize);
+    return getValidityBufferSizeFromCount(valueCount)
+        + vector.getBufferSizeFor(valueCount * listSize);
   }
 
   @Override
@@ -360,6 +382,7 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
   /**
    * Get value indicating if inner vector is set.
+   *
    * @return 1 if inner vector is explicitly set via #addOrGetVector else 0
    */
   public int size() {
@@ -377,7 +400,9 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     }
     // returned vector must have the same field
     if (!Objects.equals(vector.getField().getType(), type.getType())) {
-      final String msg = String.format("Inner vector type mismatch. Requested type: [%s], actual type: [%s]",
+      final String msg =
+          String.format(
+              "Inner vector type mismatch. Requested type: [%s], actual type: [%s]",
               type.getType(), vector.getField().getType());
       throw new SchemaChangeRuntimeException(msg);
     }
@@ -399,7 +424,8 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
   @Override
   public UnionVector promoteToUnion() {
-    UnionVector vector = new UnionVector(name, allocator, /* field type */ null, /* call-back */ null);
+    UnionVector vector =
+        new UnionVector(getName(), allocator, /* field type */ null, /* call-back */ null);
     this.vector.clear();
     this.vector = vector;
     invalidateReader();
@@ -448,16 +474,13 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     return vals;
   }
 
-  /**
-   * Returns whether the value at index null.
-   */
+  /** Returns whether the value at index null. */
+  @Override
   public boolean isNull(int index) {
     return (isSet(index) == 0);
   }
 
-  /**
-   * Returns non-zero when the value at index is non-null.
-   */
+  /** Returns non-zero when the value at index is non-null. */
   public int isSet(int index) {
     final int byteIndex = index >> 3;
     final byte b = validityBuffer.getByte(byteIndex);
@@ -475,17 +498,13 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     return valueCount;
   }
 
-  /**
-   * Returns the number of elements the validity buffer can represent with its
-   * current capacity.
-   */
+  /** Returns the number of elements the validity buffer can represent with its current capacity. */
   private int getValidityBufferValueCapacity() {
     return capAtMaxInt(validityBuffer.capacity() * 8);
   }
 
-  /**
-   * Sets the value at index to null.  Reallocates if index is larger than capacity.
-   */
+  /** Sets the value at index to null. Reallocates if index is larger than capacity. */
+  @Override
   public void setNull(int index) {
     while (index >= getValidityBufferValueCapacity()) {
       reallocValidityBuffer();
@@ -516,8 +535,18 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
   }
 
   @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator) {
+    return getTransferPair(field, allocator, null);
+  }
+
+  @Override
   public TransferPair getTransferPair(String ref, BufferAllocator allocator, CallBack callBack) {
     return new TransferImpl(ref, allocator, callBack);
+  }
+
+  @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator, CallBack callBack) {
+    return new TransferImpl(field, allocator, callBack);
   }
 
   @Override
@@ -563,7 +592,11 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     TransferPair dataPair;
 
     public TransferImpl(String name, BufferAllocator allocator, CallBack callBack) {
-      this(new FixedSizeListVector(name, allocator, fieldType, callBack));
+      this(new FixedSizeListVector(name, allocator, field.getFieldType(), callBack));
+    }
+
+    public TransferImpl(Field field, BufferAllocator allocator, CallBack callBack) {
+      this(new FixedSizeListVector(field, allocator, callBack));
     }
 
     public TransferImpl(FixedSizeListVector to) {
@@ -583,8 +616,12 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
 
     @Override
     public void splitAndTransfer(int startIndex, int length) {
-      Preconditions.checkArgument(startIndex >= 0 && length >= 0 && startIndex + length <= valueCount,
-          "Invalid parameters startIndex: %s, length: %s for valueCount: %s", startIndex, length, valueCount);
+      Preconditions.checkArgument(
+          startIndex >= 0 && length >= 0 && startIndex + length <= valueCount,
+          "Invalid parameters startIndex: %s, length: %s for valueCount: %s",
+          startIndex,
+          length,
+          valueCount);
       final int startPoint = listSize * startIndex;
       final int sliceLength = listSize * length;
       to.clear();
@@ -599,7 +636,8 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
     /*
      * transfer the validity.
      */
-    private void splitAndTransferValidityBuffer(int startIndex, int length, FixedSizeListVector target) {
+    private void splitAndTransferValidityBuffer(
+        int startIndex, int length, FixedSizeListVector target) {
       int firstByteSource = BitVectorHelper.byteIndex(startIndex);
       int lastByteSource = BitVectorHelper.byteIndex(valueCount - 1);
       int byteSizeTarget = getValidityBufferSizeFromCount(length);
@@ -623,8 +661,11 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
           target.allocateValidityBuffer(byteSizeTarget);
 
           for (int i = 0; i < byteSizeTarget - 1; i++) {
-            byte b1 = BitVectorHelper.getBitsFromCurrentByte(validityBuffer, firstByteSource + i, offset);
-            byte b2 = BitVectorHelper.getBitsFromNextByte(validityBuffer, firstByteSource + i + 1, offset);
+            byte b1 =
+                BitVectorHelper.getBitsFromCurrentByte(validityBuffer, firstByteSource + i, offset);
+            byte b2 =
+                BitVectorHelper.getBitsFromNextByte(
+                    validityBuffer, firstByteSource + i + 1, offset);
 
             target.validityBuffer.setByte(i, (b1 + b2));
           }
@@ -639,15 +680,18 @@ public class FixedSizeListVector extends BaseValueVector implements BaseListVect
            * by shifting data from the current byte.
            */
           if ((firstByteSource + byteSizeTarget - 1) < lastByteSource) {
-            byte b1 = BitVectorHelper.getBitsFromCurrentByte(validityBuffer,
-                firstByteSource + byteSizeTarget - 1, offset);
-            byte b2 = BitVectorHelper.getBitsFromNextByte(validityBuffer,
-                firstByteSource + byteSizeTarget, offset);
+            byte b1 =
+                BitVectorHelper.getBitsFromCurrentByte(
+                    validityBuffer, firstByteSource + byteSizeTarget - 1, offset);
+            byte b2 =
+                BitVectorHelper.getBitsFromNextByte(
+                    validityBuffer, firstByteSource + byteSizeTarget, offset);
 
             target.validityBuffer.setByte(byteSizeTarget - 1, b1 + b2);
           } else {
-            byte b1 = BitVectorHelper.getBitsFromCurrentByte(validityBuffer,
-                firstByteSource + byteSizeTarget - 1, offset);
+            byte b1 =
+                BitVectorHelper.getBitsFromCurrentByte(
+                    validityBuffer, firstByteSource + byteSizeTarget - 1, offset);
             target.validityBuffer.setByte(byteSizeTarget - 1, b1);
           }
         }

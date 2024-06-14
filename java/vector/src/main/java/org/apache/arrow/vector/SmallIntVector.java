@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.vector;
 
 import static org.apache.arrow.vector.NullCheckingForGet.NULL_CHECKING_ENABLED;
@@ -31,17 +30,14 @@ import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
 
 /**
- * SmallIntVector implements a fixed width (2 bytes) vector of
- * short values which could be null. A validity buffer (bit vector) is
- * maintained to track which elements in the vector are null.
+ * SmallIntVector implements a fixed width (2 bytes) vector of short values which could be null. A
+ * validity buffer (bit vector) is maintained to track which elements in the vector are null.
  */
 public final class SmallIntVector extends BaseFixedWidthVector implements BaseIntVector {
   public static final byte TYPE_WIDTH = 2;
-  private final FieldReader reader;
 
   /**
-   * Instantiate a SmallIntVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a SmallIntVector. This doesn't allocate any memory for the data in vector.
    *
    * @param name name of the vector
    * @param allocator allocator for memory management.
@@ -51,8 +47,7 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Instantiate a SmallIntVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a SmallIntVector. This doesn't allocate any memory for the data in vector.
    *
    * @param name name of the vector
    * @param fieldType type of Field materialized by this vector
@@ -63,30 +58,22 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Instantiate a SmallIntVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a SmallIntVector. This doesn't allocate any memory for the data in vector.
    *
    * @param field field materialized by this vector
    * @param allocator allocator for memory management.
    */
   public SmallIntVector(Field field, BufferAllocator allocator) {
     super(field, allocator, TYPE_WIDTH);
-    reader = new SmallIntReaderImpl(SmallIntVector.this);
   }
 
-  /**
-   * Get a reader that supports reading values from this vector.
-   *
-   * @return Field Reader for this vector
-   */
   @Override
-  public FieldReader getReader() {
-    return reader;
+  protected FieldReader getReaderImpl() {
+    return new SmallIntReaderImpl(SmallIntVector.this);
   }
 
   /**
-   * Get minor type for this vector. The vector holds values belonging
-   * to a particular type.
+   * Get minor type for this vector. The vector holds values belonging to a particular type.
    *
    * @return {@link org.apache.arrow.vector.types.Types.MinorType}
    */
@@ -95,18 +82,16 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
     return MinorType.SMALLINT;
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value retrieval methods                        |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |          vector value retrieval methods                        |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
    * Get the element at the given index from the vector.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
   public short get(int index) throws IllegalStateException {
@@ -117,11 +102,10 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Get the element at the given index from the vector and
-   * sets the state in holder. If element at given index
-   * is null, holder.isSet will be zero.
+   * Get the element at the given index from the vector and sets the state in holder. If element at
+   * given index is null, holder.isSet will be zero.
    *
-   * @param index   position of element
+   * @param index position of element
    */
   public void get(int index, NullableSmallIntHolder holder) {
     if (isSet(index) == 0) {
@@ -135,9 +119,10 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   /**
    * Same as {@link #get(int)}.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
+  @Override
   public Short getObject(int index) {
     if (isSet(index) == 0) {
       return null;
@@ -147,11 +132,10 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value setter methods                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |          vector value setter methods                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   private void setValue(int index, int value) {
     valueBuffer.setShort((long) index * TYPE_WIDTH, value);
@@ -164,8 +148,8 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   /**
    * Set the element at the given index to the given value.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void set(int index, int value) {
     BitVectorHelper.setBit(validityBuffer, index);
@@ -175,8 +159,8 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   /**
    * Set the element at the given index to the given value.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void set(int index, short value) {
     BitVectorHelper.setBit(validityBuffer, index);
@@ -184,12 +168,11 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Set the element at the given index to the value set in data holder.
-   * If the value in holder is not indicated as set, element in the
-   * at the given index will be null.
+   * Set the element at the given index to the value set in data holder. If the value in holder is
+   * not indicated as set, element in the at the given index will be null.
    *
-   * @param index   position of element
-   * @param holder  nullable data holder for value of element
+   * @param index position of element
+   * @param holder nullable data holder for value of element
    */
   public void set(int index, NullableSmallIntHolder holder) throws IllegalArgumentException {
     if (holder.isSet < 0) {
@@ -205,8 +188,8 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   /**
    * Set the element at the given index to the value set in data holder.
    *
-   * @param index   position of element
-   * @param holder  data holder for value of element
+   * @param index position of element
+   * @param holder data holder for value of element
    */
   public void set(int index, SmallIntHolder holder) {
     BitVectorHelper.setBit(validityBuffer, index);
@@ -214,12 +197,11 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Same as {@link #set(int, int)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, int)} except that it handles the case when index is greater than or
+   * equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void setSafe(int index, int value) {
     handleSafe(index);
@@ -227,12 +209,11 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Same as {@link #set(int, short)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, short)} except that it handles the case when index is greater than or
+   * equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void setSafe(int index, short value) {
     handleSafe(index);
@@ -240,12 +221,11 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Same as {@link #set(int, NullableSmallIntHolder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, NullableSmallIntHolder)} except that it handles the case when index is
+   * greater than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param holder  nullable data holder for value of element
+   * @param index position of element
+   * @param holder nullable data holder for value of element
    */
   public void setSafe(int index, NullableSmallIntHolder holder) throws IllegalArgumentException {
     handleSafe(index);
@@ -253,12 +233,11 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Same as {@link #set(int, SmallIntHolder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, SmallIntHolder)} except that it handles the case when index is greater
+   * than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param holder  data holder for value of element
+   * @param index position of element
+   * @param holder data holder for value of element
    */
   public void setSafe(int index, SmallIntHolder holder) {
     handleSafe(index);
@@ -266,8 +245,8 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Store the given value at a particular position in the vector. isSet indicates
-   * whether the value is NULL or not.
+   * Store the given value at a particular position in the vector. isSet indicates whether the value
+   * is NULL or not.
    *
    * @param index position of the new value
    * @param isSet 0 for NULL value, 1 otherwise
@@ -282,9 +261,8 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Same as {@link #set(int, int, short)} except that it handles the case
-   * when index is greater than or equal to current value capacity of the
-   * vector.
+   * Same as {@link #set(int, int, short)} except that it handles the case when index is greater
+   * than or equal to current value capacity of the vector.
    *
    * @param index position of the new value
    * @param isSet 0 for NULL value, 1 otherwise
@@ -296,8 +274,7 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   }
 
   /**
-   * Given a data buffer, get the value stored at a particular position
-   * in the vector.
+   * Given a data buffer, get the value stored at a particular position in the vector.
    *
    * <p>This method should not be used externally.
    *
@@ -309,16 +286,14 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
     return buffer.getShort((long) index * TYPE_WIDTH);
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |                      vector transfer                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
+  |                                                                |
+  |                      vector transfer                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
-   * Construct a TransferPair comprising of this and a target vector of
-   * the same type.
+   * Construct a TransferPair comprising this and a target vector of the same type.
    *
    * @param ref name of the target vector
    * @param allocator allocator for the target vector
@@ -327,6 +302,18 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
   @Override
   public TransferPair getTransferPair(String ref, BufferAllocator allocator) {
     return new TransferImpl(ref, allocator);
+  }
+
+  /**
+   * Construct a TransferPair comprising this and a target vector of the same type.
+   *
+   * @param field Field object used by the target vector
+   * @param allocator allocator for the target vector
+   * @return {@link TransferPair}
+   */
+  @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator) {
+    return new TransferImpl(field, allocator);
   }
 
   /**
@@ -360,6 +347,10 @@ public final class SmallIntVector extends BaseFixedWidthVector implements BaseIn
 
     public TransferImpl(String ref, BufferAllocator allocator) {
       to = new SmallIntVector(ref, field.getFieldType(), allocator);
+    }
+
+    public TransferImpl(Field field, BufferAllocator allocator) {
+      to = new SmallIntVector(field, allocator);
     }
 
     public TransferImpl(SmallIntVector to) {

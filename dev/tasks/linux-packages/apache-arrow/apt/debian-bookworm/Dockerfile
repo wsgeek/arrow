@@ -42,8 +42,8 @@ RUN \
     cmake \
     debhelper \
     devscripts \
+    gi-docgen \
     git \
-    gtk-doc-tools \
     libboost-filesystem-dev \
     libboost-system-dev \
     libbrotli-dev \
@@ -57,6 +57,7 @@ RUN \
     libgrpc++-dev \
     libgtest-dev \
     liblz4-dev \
+    libmimalloc-dev \
     libprotobuf-dev \
     libprotoc-dev \
     libre2-dev \
@@ -68,6 +69,7 @@ RUN \
     llvm-dev \
     lsb-release \
     meson \
+    mold \
     ninja-build \
     nlohmann-json3-dev \
     pkg-config \

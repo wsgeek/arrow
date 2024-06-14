@@ -24,11 +24,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/apache/arrow/go/v13/arrow"
-	"github.com/apache/arrow/go/v13/arrow/bitutil"
-	"github.com/apache/arrow/go/v13/arrow/internal/debug"
-	"github.com/apache/arrow/go/v13/arrow/memory"
-	"github.com/goccy/go-json"
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/arrow/bitutil"
+	"github.com/apache/arrow/go/v17/arrow/internal/debug"
+	"github.com/apache/arrow/go/v17/arrow/memory"
+	"github.com/apache/arrow/go/v17/internal/json"
 )
 
 // Timestamp represents an immutable sequence of arrow.Timestamp values.
@@ -90,14 +90,16 @@ func (a *Timestamp) ValueStr(i int) string {
 	if a.IsNull(i) {
 		return NullValueStr
 	}
-	return a.values[i].ToTime(a.DataType().(*arrow.TimestampType).Unit).Format("2006-01-02 15:04:05.999999999")
+
+	toTime, _ := a.DataType().(*arrow.TimestampType).GetToTimeFunc()
+	return toTime(a.values[i]).Format("2006-01-02 15:04:05.999999999Z0700")
 }
 
 func (a *Timestamp) GetOneForMarshal(i int) interface{} {
-	if a.IsNull(i) {
-		return nil
+	if val := a.ValueStr(i); val != NullValueStr {
+		return val
 	}
-	return a.values[i].ToTime(a.DataType().(*arrow.TimestampType).Unit).Format("2006-01-02 15:04:05.999999999")
+	return nil
 }
 
 func (a *Timestamp) MarshalJSON() ([]byte, error) {
@@ -171,8 +173,20 @@ func (b *TimestampBuilder) AppendNull() {
 	b.UnsafeAppendBoolToBitmap(false)
 }
 
+func (b *TimestampBuilder) AppendNulls(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendNull()
+	}
+}
+
 func (b *TimestampBuilder) AppendEmptyValue() {
 	b.Append(0)
+}
+
+func (b *TimestampBuilder) AppendEmptyValues(n int) {
+	for i := 0; i < n; i++ {
+		b.AppendEmptyValue()
+	}
 }
 
 func (b *TimestampBuilder) UnsafeAppend(v arrow.Timestamp) {
@@ -277,7 +291,13 @@ func (b *TimestampBuilder) AppendValueFromString(s string) error {
 		b.AppendNull()
 		return nil
 	}
-	v, err := arrow.TimestampFromString(s, b.dtype.Unit)
+
+	loc, err := b.dtype.GetZone()
+	if err != nil {
+		return err
+	}
+
+	v, _, err := arrow.TimestampFromStringInLocation(s, b.dtype.Unit, loc)
 	if err != nil {
 		b.AppendNull()
 		return err

@@ -267,16 +267,16 @@ class PackageTask
     # Disable arm64 targets by default for now
     # because they require some setups on host.
     [
-      "debian-bullseye",
-      # "debian-bullseye-arm64",
       "debian-bookworm",
       # "debian-bookworm-arm64",
+      "debian-trixie",
+      # "debian-trixie-arm64",
       "ubuntu-focal",
       # "ubuntu-focal-arm64",
       "ubuntu-jammy",
       # "ubuntu-jammy-arm64",
-      "ubuntu-kinetic",
-      # "ubuntu-kinetic-arm64",
+      "ubuntu-noble",
+      # "ubuntu-noble-arm64",
     ]
   end
 
@@ -415,8 +415,8 @@ VERSION=#{@deb_upstream_version}
       # "almalinux-9-arch64",
       "almalinux-8",
       # "almalinux-8-arch64",
-      "amazon-linux-2",
-      # "amazon-linux-2-arch64",
+      "amazon-linux-2023",
+      # "amazon-linux-2023-arch64",
       "centos-9-stream",
       # "centos-9-stream-aarch64",
       "centos-8-stream",

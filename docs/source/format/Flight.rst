@@ -68,9 +68,8 @@ Downloading Data
 
 A client that wishes to download the data would:
 
-.. figure:: ./Flight/DoGet.mmd.svg
-
-   Retrieving data via ``DoGet``.
+.. mermaid:: ./Flight/DoGet.mmd
+   :caption: Retrieving data via ``DoGet``.
 
 #. Construct or acquire a ``FlightDescriptor`` for the data set they
    are interested in.
@@ -103,7 +102,7 @@ A client that wishes to download the data would:
    different endpoints may be interleaved to allow parallel fetches.
 
    Note that since some clients may ignore ``FlightInfo.ordered``, if
-   ordering is important and client support can not be ensured,
+   ordering is important and client support cannot be ensured,
    servers should return a single endpoint.
 
    The response also contains other metadata, like the schema, and
@@ -121,6 +120,13 @@ A client that wishes to download the data would:
    connection to the original server to fetch data. Otherwise, the
    client must connect to one of the indicated locations.
 
+   The server may list "itself" as a location alongside other server
+   locations.  Normally this requires the server to know its public
+   address, but it may also use the special URI string
+   ``arrow-flight-reuse-connection://?`` to tell clients that they may
+   reuse an existing connection to the same server, without having to
+   be able to name itself.  See `Connection Reuse`_ below.
+
    In this way, the locations inside an endpoint can also be thought
    of as performing look-aside load balancing or service discovery
    functions. And the endpoints can represent data that is partitioned
@@ -133,14 +139,96 @@ A client that wishes to download the data would:
    can also use ``FlightInfo.ordered``. See the previous item for
    details of ``FlightInfo.ordered``.
 
+   Each endpoint may have expiration time
+   (``FlightEndpoint.expiration_time``). If an endpoint has expiration
+   time, the client can get data multiple times by ``DoGet`` until the
+   expiration time is reached. Otherwise, it is application-defined
+   whether ``DoGet`` requests may be retried. The expiration time is
+   represented as `google.protobuf.Timestamp`_.
+
+   If the expiration time is short, the client may be able to extend
+   the expiration time by ``RenewFlightEndpoint`` action. The client
+   need to use ``DoAction`` with ``RenewFlightEndpoint`` action type
+   to extend the expiration time. ``Action.body`` must be
+   ``RenewFlightEndpointRequest`` that has ``FlightEndpoint`` to be
+   renewed.
+
+   The client may be able to cancel the returned ``FlightInfo`` by
+   ``CancelFlightInfo`` action. The client need to use ``DoAction``
+   with ``CancelFlightInfo`` action type to cancel the ``FlightInfo``.
+
+.. _google.protobuf.Timestamp: https://protobuf.dev/reference/protobuf/google.protobuf/#timestamp
+
+Downloading Data by Running a Heavy Query
+-----------------------------------------
+
+A client may need to request a heavy query to download
+data. However, ``GetFlightInfo`` doesn't return until the query
+completes, so the client is blocked. In this situation, the client
+can use ``PollFlightInfo`` instead of ``GetFlightInfo``:
+
+.. mermaid:: ./Flight/PollFlightInfo.mmd
+   :caption: Polling a long-running query by ``PollFlightInfo``.
+
+#. Construct or acquire a ``FlightDescriptor``, as before.
+#. Call ``PollFlightInfo(FlightDescriptor)`` to get a ``PollInfo``
+   message.
+
+   A server should respond as quickly as possible on the first
+   call. So the client shouldn't wait for the first ``PollInfo``
+   response.
+
+   If the query isn't finished, ``PollInfo.flight_descriptor`` has a
+   ``FlightDescriptor``. The client should use the descriptor (not the
+   original ``FlightDescriptor``) to call the next
+   ``PollFlightInfo()``.  A server should recognize a
+   ``PollInfo.flight_descriptor`` that is not necessarily the latest
+   in case the client misses an update in between.
+
+   If the query is finished, ``PollInfo.flight_descriptor`` is
+   unset.
+
+   ``PollInfo.info`` is the currently available results so far. It's
+   a complete ``FlightInfo`` each time not just the delta between the
+   previous and current ``FlightInfo``. A server should only append to
+   the endpoints in ``PollInfo.info`` each time. So the client can
+   run ``DoGet(Ticket)`` with the ``Ticket`` in the ``PollInfo.info``
+   even when the query isn't finished yet. ``FlightInfo.ordered`` is
+   also valid.
+
+   A server should not respond until the result would be different
+   from last time. That way, the client can "long poll" for updates
+   without constantly making requests. Clients can set a short timeout
+   to avoid blocking calls if desired.
+
+   ``PollInfo.progress`` may be set. It represents progress of the
+   query. If it's set, the value must be in ``[0.0, 1.0]``. The value
+   is not necessarily monotonic or nondecreasing. A server may respond by
+   only updating the ``PollInfo.progress`` value, though it shouldn't
+   spam the client with updates.
+
+   ``PollInfo.timestamp`` is the expiration time for this
+   request. After this passes, a server might not accept the poll
+   descriptor anymore and the query may be cancelled. This may be
+   updated on a call to ``PollFlightInfo``. The expiration time is
+   represented as `google.protobuf.Timestamp`_.
+
+   A client may be able to cancel the query by the
+   ``CancelFlightInfo`` action.
+
+   A server should return an error status instead of a response if the
+   query fails. The client should not poll the request except for
+   ``TIMED_OUT`` and ``UNAVAILABLE``, which may not originate from the
+   server.
+#. Consume each endpoint returned by the server, as before.
+
 Uploading Data
 --------------
 
 To upload data, a client would:
 
-.. figure:: ./Flight/DoPut.mmd.svg
-
-   Uploading data via ``DoPut``.
+.. mermaid:: ./Flight/DoPut.mmd
+   :caption: Uploading data via ``DoPut``.
 
 #. Construct or acquire a ``FlightDescriptor``, as before.
 #. Call ``DoPut(FlightData)`` and upload a stream of Arrow record
@@ -166,9 +254,8 @@ require being stateful if implemented using ``DoGet`` and
 ``DoPut``. Instead, ``DoExchange`` allows this to be implemented as a
 single call. A client would:
 
-.. figure:: ./Flight/DoExchange.mmd.svg
-
-   Complex data flow with ``DoExchange``.
+.. mermaid:: ./Flight/DoExchange.mmd
+   :caption: Complex data flow with ``DoExchange``.
 
 #. Construct or acquire a ``FlightDescriptor``, as before.
 #. Call ``DoExchange(FlightData)``.
@@ -223,28 +310,59 @@ well, in which case any `authentication method supported by gRPC
 
 .. _Mutual TLS (mTLS): https://grpc.io/docs/guides/auth/#supported-auth-mechanisms
 
-Transport Implementations
-=========================
+.. _flight-location-uris:
+
+Location URIs
+=============
 
 Flight is primarily defined in terms of its Protobuf and gRPC
 specification below, but Arrow implementations may also support
-alternative transports (see :ref:`status-flight-rpc`). In that case,
-implementations should use the following URI schemes for the given
-transport implementations:
+alternative transports (see :ref:`status-flight-rpc`).  Clients and
+servers need to know which transport to use for a given URI in a
+Location, so Flight implementations should use the following URI
+schemes for the given transports:
 
-+----------------------------+----------------------------+
-| Transport                  | URI Scheme                 |
-+============================+============================+
-| gRPC (plaintext)           | grpc: or grpc+tcp:         |
-+----------------------------+----------------------------+
-| gRPC (TLS)                 | grpc+tls:                  |
-+----------------------------+----------------------------+
-| gRPC (Unix domain socket)  | grpc+unix:                 |
-+----------------------------+----------------------------+
-| UCX_ (plaintext)           | ucx:                       |
-+----------------------------+----------------------------+
++----------------------------+--------------------------------+
+| Transport                  | URI Scheme                     |
++============================+================================+
+| gRPC (plaintext)           | grpc: or grpc+tcp:             |
++----------------------------+--------------------------------+
+| gRPC (TLS)                 | grpc+tls:                      |
++----------------------------+--------------------------------+
+| gRPC (Unix domain socket)  | grpc+unix:                     |
++----------------------------+--------------------------------+
+| (reuse connection)         | arrow-flight-reuse-connection: |
++----------------------------+--------------------------------+
+| UCX_ (plaintext)           | ucx:                           |
++----------------------------+--------------------------------+
 
 .. _UCX: https://openucx.org/
+
+Connection Reuse
+----------------
+
+"Reuse connection" above is not a particular transport.  Instead, it
+means that the client may try to execute DoGet against the same server
+(and through the same connection) that it originally obtained the
+FlightInfo from (i.e., that it called GetFlightInfo against).  This is
+interpreted the same way as when no specific ``Location`` are
+returned.
+
+This allows the server to return "itself" as one possible location to
+fetch data without having to know its own public address, which can be
+useful in deployments where knowing this would be difficult or
+impossible.  For example, a developer may forward a remote service in
+a cloud environment to their local machine; in this case, the remote
+service would have no way to know the local hostname and port that it
+is being accessed over.
+
+For compatibility reasons, the URI should always be
+``arrow-flight-reuse-connection://?``, with the trailing empty query
+string.  Java's URI implementation does not accept ``scheme:`` or
+``scheme://``, and C++'s implementation does not accept an empty
+string, so the obvious candidates are not compatible.  The chosen
+representation can be parsed by both implementations, as well as Go's
+``net/url`` and Python's ``urllib.parse``.
 
 Error Handling
 ==============

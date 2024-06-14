@@ -17,12 +17,14 @@
 
 import { ReadableInterop, ArrowJSONLike } from '../io/interfaces.js';
 
-/* eslint-disable unicorn/throw-new-error */
+import type { ByteBuffer } from 'flatbuffers';
+import type { ReadStream } from 'node:fs';
+import type { FileHandle as FileHandle_ } from 'node:fs/promises';
 
 /** @ignore */
-type FSReadStream = import('fs').ReadStream;
+type FSReadStream = ReadStream;
 /** @ignore */
-type FileHandle = import('fs').promises.FileHandle;
+type FileHandle = FileHandle_;
 
 /** @ignore */
 export interface Subscription {
@@ -41,33 +43,6 @@ export interface Observer<T> {
 export interface Observable<T> {
     subscribe: (observer: Observer<T>) => Subscription;
 }
-
-/** @ignore */
-const [BigInt64ArrayCtor, BigInt64ArrayAvailable] = (() => {
-    const BigInt64ArrayUnavailableError = () => { throw new Error('BigInt64Array is not available in this environment'); };
-    class BigInt64ArrayUnavailable {
-        static get BYTES_PER_ELEMENT() { return 8; }
-        static of() { throw BigInt64ArrayUnavailableError(); }
-        static from() { throw BigInt64ArrayUnavailableError(); }
-        constructor() { throw BigInt64ArrayUnavailableError(); }
-    }
-    return typeof BigInt64Array !== 'undefined' ? [BigInt64Array, true] : [<any>BigInt64ArrayUnavailable, false];
-})() as [BigInt64ArrayConstructor, boolean];
-
-/** @ignore */
-const [BigUint64ArrayCtor, BigUint64ArrayAvailable] = (() => {
-    const BigUint64ArrayUnavailableError = () => { throw new Error('BigUint64Array is not available in this environment'); };
-    class BigUint64ArrayUnavailable {
-        static get BYTES_PER_ELEMENT() { return 8; }
-        static of() { throw BigUint64ArrayUnavailableError(); }
-        static from() { throw BigUint64ArrayUnavailableError(); }
-        constructor() { throw BigUint64ArrayUnavailableError(); }
-    }
-    return typeof BigUint64Array !== 'undefined' ? [BigUint64Array, true] : [<any>BigUint64ArrayUnavailable, false];
-})() as [BigUint64ArrayConstructor, boolean];
-
-export { BigInt64ArrayCtor as BigInt64Array, BigInt64ArrayAvailable };
-export { BigUint64ArrayCtor as BigUint64Array, BigUint64ArrayAvailable };
 
 /** @ignore */ const isNumber = (x: any) => typeof x === 'number';
 /** @ignore */ const isBoolean = (x: any) => typeof x === 'boolean';
@@ -172,7 +147,7 @@ export const isReadableNodeStream = (x: any): x is NodeJS.ReadableStream => {
 };
 
 /** @ignore */
-export const isFlatbuffersByteBuffer = (x: any): x is import('flatbuffers').ByteBuffer => {
+export const isFlatbuffersByteBuffer = (x: any): x is ByteBuffer => {
     return isObject(x) &&
         isFunction(x['clear']) &&
         isFunction(x['bytes']) &&

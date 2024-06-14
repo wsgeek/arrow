@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.driver.jdbc;
 
 import static org.apache.arrow.driver.jdbc.utils.FlightSqlTestCertificates.CertKeyPair;
@@ -27,7 +26,6 @@ import java.sql.SQLException;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Properties;
-
 import org.apache.arrow.driver.jdbc.authentication.Authentication;
 import org.apache.arrow.driver.jdbc.authentication.TokenAuthentication;
 import org.apache.arrow.driver.jdbc.authentication.UserPasswordAuthentication;
@@ -51,10 +49,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Utility class for unit tests that need to instantiate a {@link FlightServer}
- * and interact with it.
+ * Utility class for unit tests that need to instantiate a {@link FlightServer} and interact with
+ * it.
  */
 public class FlightServerTestRule implements TestRule, AutoCloseable {
+  public static final String DEFAULT_USER = "flight-test-user";
+  public static final String DEFAULT_PASSWORD = "flight-test-password";
+
   private static final Logger LOGGER = LoggerFactory.getLogger(FlightServerTestRule.class);
 
   private final Properties properties;
@@ -63,21 +64,25 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
   private final FlightSqlProducer producer;
   private final Authentication authentication;
   private final CertKeyPair certKeyPair;
+  private final File mTlsCACert;
 
   private final MiddlewareCookie.Factory middlewareCookieFactory = new MiddlewareCookie.Factory();
 
-  private FlightServerTestRule(final Properties properties,
-                               final ArrowFlightConnectionConfigImpl config,
-                               final BufferAllocator allocator,
-                               final FlightSqlProducer producer,
-                               final Authentication authentication,
-                               final CertKeyPair certKeyPair) {
+  private FlightServerTestRule(
+      final Properties properties,
+      final ArrowFlightConnectionConfigImpl config,
+      final BufferAllocator allocator,
+      final FlightSqlProducer producer,
+      final Authentication authentication,
+      final CertKeyPair certKeyPair,
+      final File mTlsCACert) {
     this.properties = Preconditions.checkNotNull(properties);
     this.config = Preconditions.checkNotNull(config);
     this.allocator = Preconditions.checkNotNull(allocator);
     this.producer = Preconditions.checkNotNull(producer);
     this.authentication = authentication;
     this.certKeyPair = certKeyPair;
+    this.mTlsCACert = mTlsCACert;
   }
 
   /**
@@ -88,14 +93,9 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
    */
   public static FlightServerTestRule createStandardTestRule(final FlightSqlProducer producer) {
     UserPasswordAuthentication authentication =
-        new UserPasswordAuthentication.Builder()
-            .user("flight-test-user", "flight-test-password")
-            .build();
+        new UserPasswordAuthentication.Builder().user(DEFAULT_USER, DEFAULT_PASSWORD).build();
 
-    return new Builder()
-        .authentication(authentication)
-        .producer(producer)
-        .build();
+    return new Builder().authentication(authentication).producer(producer).build();
   }
 
   ArrowFlightJdbcDataSource createDataSource() {
@@ -106,7 +106,8 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
     return ArrowFlightJdbcConnectionPoolDataSource.createNewDataSource(properties);
   }
 
-  public ArrowFlightJdbcConnectionPoolDataSource createConnectionPoolDataSource(boolean useEncryption) {
+  public ArrowFlightJdbcConnectionPoolDataSource createConnectionPoolDataSource(
+      boolean useEncryption) {
     setUseEncryption(useEncryption);
     return ArrowFlightJdbcConnectionPoolDataSource.createNewDataSource(properties);
   }
@@ -136,11 +137,15 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
   }
 
   private FlightServer initiateServer(Location location) throws IOException {
-    FlightServer.Builder builder = FlightServer.builder(allocator, location, producer)
-        .headerAuthenticator(authentication.authenticate())
-        .middleware(FlightServerMiddleware.Key.of("KEY"), middlewareCookieFactory);
+    FlightServer.Builder builder =
+        FlightServer.builder(allocator, location, producer)
+            .headerAuthenticator(authentication.authenticate())
+            .middleware(FlightServerMiddleware.Key.of("KEY"), middlewareCookieFactory);
     if (certKeyPair != null) {
       builder.useTls(certKeyPair.cert, certKeyPair.key);
+    }
+    if (mTlsCACert != null) {
+      builder.useMTlsClientVerification(mTlsCACert);
     }
     return builder.build();
   }
@@ -161,12 +166,13 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
     };
   }
 
-  private FlightServer getStartServer(CheckedFunction<Location, FlightServer> newServerFromLocation,
-                                      int retries)
+  private FlightServer getStartServer(
+      CheckedFunction<Location, FlightServer> newServerFromLocation, int retries)
       throws IOException {
     final Deque<ReflectiveOperationException> exceptions = new ArrayDeque<>();
     for (; retries > 0; retries--) {
-      final FlightServer server = newServerFromLocation.apply(Location.forGrpcInsecure("localhost", 0));
+      final FlightServer server =
+          newServerFromLocation.apply(Location.forGrpcInsecure("localhost", 0));
       try {
         Method start = server.getClass().getMethod("start");
         start.setAccessible(true);
@@ -204,14 +210,13 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
     AutoCloseables.close(allocator);
   }
 
-  /**
-   * Builder for {@link FlightServerTestRule}.
-   */
+  /** Builder for {@link FlightServerTestRule}. */
   public static final class Builder {
     private final Properties properties;
     private FlightSqlProducer producer;
     private Authentication authentication;
     private CertKeyPair certKeyPair;
+    private File mTlsCACert;
 
     public Builder() {
       this.properties = new Properties();
@@ -230,9 +235,8 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
     }
 
     /**
-     * Sets the type of the authentication that will be used in the server rules.
-     * There are two types of authentication: {@link UserPasswordAuthentication} and
-     * {@link TokenAuthentication}.
+     * Sets the type of the authentication that will be used in the server rules. There are two
+     * types of authentication: {@link UserPasswordAuthentication} and {@link TokenAuthentication}.
      *
      * @param authentication the type of authentication.
      * @return the Builder.
@@ -246,11 +250,22 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
      * Enable TLS on the server.
      *
      * @param certChain The certificate chain to use.
-     * @param key       The private key to use.
+     * @param key The private key to use.
      * @return the Builder.
      */
     public Builder useEncryption(final File certChain, final File key) {
       certKeyPair = new CertKeyPair(certChain, key);
+      return this;
+    }
+
+    /**
+     * Enable Client Verification via mTLS on the server.
+     *
+     * @param mTlsCACert The CA certificate to use for client verification.
+     * @return the Builder.
+     */
+    public Builder useMTlsClientVerification(final File mTlsCACert) {
+      this.mTlsCACert = mTlsCACert;
       return this;
     }
 
@@ -261,14 +276,20 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
      */
     public FlightServerTestRule build() {
       authentication.populateProperties(properties);
-      return new FlightServerTestRule(properties, new ArrowFlightConnectionConfigImpl(properties),
-          new RootAllocator(Long.MAX_VALUE), producer, authentication, certKeyPair);
+      return new FlightServerTestRule(
+          properties,
+          new ArrowFlightConnectionConfigImpl(properties),
+          new RootAllocator(Long.MAX_VALUE),
+          producer,
+          authentication,
+          certKeyPair,
+          mTlsCACert);
     }
   }
 
   /**
-   * A middleware to handle with the cookies in the server. It is used to test if cookies are
-   * being sent properly.
+   * A middleware to handle with the cookies in the server. It is used to test if cookies are being
+   * sent properly.
    */
   static class MiddlewareCookie implements FlightServerMiddleware {
 
@@ -286,26 +307,20 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
     }
 
     @Override
-    public void onCallCompleted(CallStatus callStatus) {
-
-    }
+    public void onCallCompleted(CallStatus callStatus) {}
 
     @Override
-    public void onCallErrored(Throwable throwable) {
+    public void onCallErrored(Throwable throwable) {}
 
-    }
-
-    /**
-     * A factory for the MiddlewareCookie.
-     */
+    /** A factory for the MiddlewareCookie. */
     static class Factory implements FlightServerMiddleware.Factory<MiddlewareCookie> {
 
       private boolean receivedCookieHeader = false;
       private String cookie;
 
       @Override
-      public MiddlewareCookie onCallStarted(CallInfo callInfo, CallHeaders callHeaders,
-                                            RequestContext requestContext) {
+      public MiddlewareCookie onCallStarted(
+          CallInfo callInfo, CallHeaders callHeaders, RequestContext requestContext) {
         cookie = callHeaders.get("Cookie");
         receivedCookieHeader = null != cookie;
         return new MiddlewareCookie(this);
@@ -316,5 +331,4 @@ public class FlightServerTestRule implements TestRule, AutoCloseable {
       }
     }
   }
-
 }

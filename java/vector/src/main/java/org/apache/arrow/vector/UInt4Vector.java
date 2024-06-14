@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.vector;
 
 import static org.apache.arrow.vector.NullCheckingForGet.NULL_CHECKING_ENABLED;
@@ -32,24 +31,18 @@ import org.apache.arrow.vector.util.TransferPair;
 import org.apache.arrow.vector.util.ValueVectorUtility;
 
 /**
- * UInt4Vector implements a fixed width (4 bytes) vector of
- * integer values which could be null. A validity buffer (bit vector) is
- * maintained to track which elements in the vector are null.
+ * UInt4Vector implements a fixed width (4 bytes) vector of integer values which could be null. A
+ * validity buffer (bit vector) is maintained to track which elements in the vector are null.
  */
 public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVector {
 
-  /**
-   * The mask to use when promoting the unsigned int value to a long int.
-   */
+  /** The mask to use when promoting the unsigned int value to a long int. */
   public static final long PROMOTION_MASK = 0x00000000FFFFFFFFL;
 
-  /**
-   * The maximum 32-bit unsigned integer.
-   */
+  /** The maximum 32-bit unsigned integer. */
   public static final int MAX_UINT4 = 0XFFFFFFFF;
 
   public static final byte TYPE_WIDTH = 4;
-  private final FieldReader reader;
 
   public UInt4Vector(String name, BufferAllocator allocator) {
     this(name, FieldType.nullable(MinorType.UINT4.getType()), allocator);
@@ -59,14 +52,19 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
     this(new Field(name, fieldType, null), allocator);
   }
 
+  /**
+   * Constructor for UInt4Vector.
+   *
+   * @param field Field type
+   * @param allocator Allocator type
+   */
   public UInt4Vector(Field field, BufferAllocator allocator) {
     super(field, allocator, TYPE_WIDTH);
-    reader = new UInt4ReaderImpl(UInt4Vector.this);
   }
 
   @Override
-  public FieldReader getReader() {
-    return reader;
+  protected FieldReader getReaderImpl() {
+    return new UInt4ReaderImpl(UInt4Vector.this);
   }
 
   @Override
@@ -74,18 +72,15 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
     return MinorType.UINT4;
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value retrieval methods                        |
-   |                                                                |
-   *----------------------------------------------------------------*/
+  |                                                                |
+  |          vector value retrieval methods                        |
+  |                                                                |
+  *----------------------------------------------------------------*/
   /**
-   * Given a data buffer, get the value stored at a particular position
-   * in the vector.
+   * Given a data buffer, get the value stored at a particular position in the vector.
    *
-   * <p>To avoid overflow, the returned type is one step up from the signed
-   * type.
+   * <p>To avoid overflow, the returned type is one step up from the signed type.
    *
    * <p>This method is mainly meant for integration tests.
    *
@@ -101,7 +96,7 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   /**
    * Get the element at the given index from the vector.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
   public int get(int index) throws IllegalStateException {
@@ -112,11 +107,10 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Get the element at the given index from the vector and
-   * sets the state in holder. If element at given index
-   * is null, holder.isSet will be zero.
+   * Get the element at the given index from the vector and sets the state in holder. If element at
+   * given index is null, holder.isSet will be zero.
    *
-   * @param index   position of element
+   * @param index position of element
    */
   public void get(int index, NullableUInt4Holder holder) {
     if (isSet(index) == 0) {
@@ -130,9 +124,10 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   /**
    * Same as {@link #get(int)}.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
+  @Override
   public Integer getObject(int index) {
     if (isSet(index) == 0) {
       return null;
@@ -144,7 +139,7 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   /**
    * Same as {@link #get(int)}.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
   public Long getObjectNoOverflow(int index) {
@@ -155,13 +150,11 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
     }
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value setter methods                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |          vector value setter methods                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   private void setValue(int index, int value) {
     valueBuffer.setInt((long) index * TYPE_WIDTH, value);
@@ -170,8 +163,8 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   /**
    * Set the element at the given index to the given value.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void set(int index, int value) {
     BitVectorHelper.setBit(validityBuffer, index);
@@ -179,12 +172,11 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Set the element at the given index to the value set in data holder.
-   * If the value in holder is not indicated as set, element in the
-   * at the given index will be null.
+   * Set the element at the given index to the value set in data holder. If the value in holder is
+   * not indicated as set, element in the at the given index will be null.
    *
-   * @param index   position of element
-   * @param holder  nullable data holder for value of element
+   * @param index position of element
+   * @param holder nullable data holder for value of element
    */
   public void set(int index, NullableUInt4Holder holder) throws IllegalArgumentException {
     if (holder.isSet < 0) {
@@ -200,8 +192,8 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   /**
    * Set the element at the given index to the value set in data holder.
    *
-   * @param index   position of element
-   * @param holder  data holder for value of element
+   * @param index position of element
+   * @param holder data holder for value of element
    */
   public void set(int index, UInt4Holder holder) {
     BitVectorHelper.setBit(validityBuffer, index);
@@ -209,12 +201,11 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Same as {@link #set(int, int)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, int)} except that it handles the case when index is greater than or
+   * equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void setSafe(int index, int value) {
     handleSafe(index);
@@ -222,12 +213,11 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Same as {@link #set(int, NullableUInt4Holder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, NullableUInt4Holder)} except that it handles the case when index is
+   * greater than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param holder  nullable data holder for value of element
+   * @param index position of element
+   * @param holder nullable data holder for value of element
    */
   public void setSafe(int index, NullableUInt4Holder holder) throws IllegalArgumentException {
     handleSafe(index);
@@ -235,12 +225,11 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Same as {@link #set(int, UInt4Holder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, UInt4Holder)} except that it handles the case when index is greater
+   * than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param holder  data holder for value of element
+   * @param index position of element
+   * @param holder data holder for value of element
    */
   public void setSafe(int index, UInt4Holder holder) {
     handleSafe(index);
@@ -248,8 +237,7 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Sets the value at index to value isSet > 0, otherwise sets the index position
-   * to invalid/null.
+   * Sets the value at index to value isSet > 0, otherwise sets the index position to invalid/null.
    */
   public void set(int index, int isSet, int value) {
     if (isSet > 0) {
@@ -260,25 +248,35 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
   }
 
   /**
-   * Same as {@link #set(int, int, int)} but will reallocate if the buffer if index
-   * is larger than the current capacity.
+   * Same as {@link #set(int, int, int)} but will reallocate if the buffer if index is larger than
+   * the current capacity.
    */
   public void setSafe(int index, int isSet, int value) {
     handleSafe(index);
     set(index, isSet, value);
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |                      vector transfer                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |                      vector transfer                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   @Override
   public TransferPair getTransferPair(String ref, BufferAllocator allocator) {
     return new TransferImpl(ref, allocator);
+  }
+
+  /**
+   * Construct a TransferPair comprising this and a target vector of the same type.
+   *
+   * @param field Field object used by the target vector
+   * @param allocator allocator for the target vector
+   * @return {@link TransferPair}
+   */
+  @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator) {
+    return new TransferImpl(field, allocator);
   }
 
   @Override
@@ -303,7 +301,8 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
 
   @Override
   public String toString() {
-    return ValueVectorUtility.getToString(this, 0, getValueCount(), (v, i) -> v.getObjectNoOverflow(i));
+    return ValueVectorUtility.getToString(
+        this, 0, getValueCount(), (v, i) -> v.getObjectNoOverflow(i));
   }
 
   private class TransferImpl implements TransferPair {
@@ -311,6 +310,10 @@ public final class UInt4Vector extends BaseFixedWidthVector implements BaseIntVe
 
     public TransferImpl(String ref, BufferAllocator allocator) {
       to = new UInt4Vector(ref, field.getFieldType(), allocator);
+    }
+
+    public TransferImpl(Field field, BufferAllocator allocator) {
+      to = new UInt4Vector(field, allocator);
     }
 
     public TransferImpl(UInt4Vector to) {

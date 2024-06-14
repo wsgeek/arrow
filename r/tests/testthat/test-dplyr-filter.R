@@ -277,7 +277,6 @@ test_that("filter environment scope", {
     tbl
   )
   isShortString <- function(x) nchar(x) < 10
-  skip("TODO: ARROW-14071")
   compare_dplyr_binding(
     .input %>%
       select(-fct) %>%
@@ -318,20 +317,28 @@ test_that("Filtering with unsupported functions", {
       filter(int > 2, pnorm(dbl) > .99) %>%
       collect(),
     tbl,
-    warning = "Expression pnorm\\(dbl\\) > 0.99 not supported in Arrow; pulling data into R"
+    warning = paste(
+      "In pnorm\\(dbl\\) > 0.99: ",
+      "i Expression not supported in Arrow",
+      "> Pulling data into R",
+      sep = "\n"
+    )
   )
   compare_dplyr_binding(
     .input %>%
       filter(
         nchar(chr, type = "bytes", allowNA = TRUE) == 1, # bad, Arrow msg
         int > 2, # good
-        pnorm(dbl) > .99 # bad, opaque
+        pnorm(dbl) > .99 # bad, opaque, but we'll error on the first one before we get here
       ) %>%
       collect(),
     tbl,
-    warning = '\\* In nchar\\(chr, type = "bytes", allowNA = TRUE\\) == 1, allowNA = TRUE not supported in Arrow
-\\* Expression pnorm\\(dbl\\) > 0.99 not supported in Arrow
-pulling data into R'
+    warning = paste(
+      'In nchar\\(chr, type = "bytes", allowNA = TRUE\\) == 1: ',
+      "i allowNA = TRUE not supported in Arrow",
+      "> Pulling data into R",
+      sep = "\n"
+    )
   )
 })
 
@@ -423,5 +430,63 @@ test_that("filter() with across()", {
       ) %>%
       collect(),
     tbl
+  )
+})
+
+test_that(".by argument", {
+  compare_dplyr_binding(
+    .input %>%
+      filter(is.na(lgl), .by = chr) %>%
+      select(chr, int, lgl) %>%
+      collect(),
+    tbl
+  )
+  compare_dplyr_binding(
+    .input %>%
+      filter(is.na(lgl), .by = starts_with("chr")) %>%
+      select(chr, int, lgl) %>%
+      collect(),
+    tbl
+  )
+  compare_dplyr_binding(
+    .input %>%
+      filter(.by = chr) %>%
+      select(chr, int, lgl) %>%
+      collect(),
+    tbl
+  )
+  compare_dplyr_binding(
+    .input %>%
+      filter(.by = c(int, chr)) %>%
+      select(chr, int, lgl) %>%
+      collect(),
+    tbl
+  )
+  compare_dplyr_binding(
+    .input %>%
+      filter(.by = c("int", "chr")) %>%
+      select(chr, int, lgl) %>%
+      collect(),
+    tbl
+  )
+  # filter should pulling not grouped data into R when using the .by argument
+  compare_dplyr_binding(
+    .input %>%
+      filter(int > 2, pnorm(dbl) > .99, .by = chr) %>%
+      collect(),
+    tbl,
+    warning = paste(
+      "In pnorm\\(dbl\\) > 0.99: ",
+      "i Expression not supported in Arrow",
+      "> Pulling data into R",
+      sep = "\n"
+    )
+  )
+  expect_error(
+    tbl %>%
+      arrow_table() %>%
+      group_by(chr) %>%
+      filter(is.na(lgl), .by = chr),
+    "Can't supply `\\.by` when `\\.data` is grouped data"
   )
 })

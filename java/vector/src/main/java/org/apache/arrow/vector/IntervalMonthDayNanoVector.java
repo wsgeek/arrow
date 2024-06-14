@@ -14,14 +14,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.vector;
 
 import static org.apache.arrow.vector.NullCheckingForGet.NULL_CHECKING_ENABLED;
 
 import java.time.Duration;
 import java.time.Period;
-
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.complex.impl.IntervalMonthDayNanoReaderImpl;
@@ -34,24 +32,21 @@ import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
 
 /**
- * IntervalMonthDayNanoVector implements a fixed width vector (16 bytes) of
- * interval (month, days and nanoseconds) values which could be null.
- * A validity buffer (bit vector) is maintained to track which elements in the
- * vector are null.
+ * IntervalMonthDayNanoVector implements a fixed width vector (16 bytes) of interval (month, days
+ * and nanoseconds) values which could be null. A validity buffer (bit vector) is maintained to
+ * track which elements in the vector are null.
  *
- * Month, day and nanoseconds are indepndent from one another and there
- * is no specific limits imposed on their values.
+ * <p>Month, day and nanoseconds are independent from one another and there is no specific limits
+ * imposed on their values.
  */
 public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   public static final byte TYPE_WIDTH = 16;
   private static final byte DAY_OFFSET = 4;
   private static final byte NANOSECOND_OFFSET = 8;
-  private final FieldReader reader;
-
 
   /**
-   * Instantiate a IntervalMonthDayNanoVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a IntervalMonthDayNanoVector. This doesn't allocate any memory for the data in
+   * vector.
    *
    * @param name name of the vector
    * @param allocator allocator for memory management.
@@ -61,8 +56,8 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Instantiate a IntervalMonthDayNanoVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a IntervalMonthDayNanoVector. This doesn't allocate any memory for the data in
+   * vector.
    *
    * @param name name of the vector
    * @param fieldType type of Field materialized by this vector
@@ -73,30 +68,23 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Instantiate a IntervalMonthDayNanoVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a IntervalMonthDayNanoVector. This doesn't allocate any memory for the data in
+   * vector.
    *
    * @param field field materialized by this vector
    * @param allocator allocator for memory management.
    */
   public IntervalMonthDayNanoVector(Field field, BufferAllocator allocator) {
     super(field, allocator, TYPE_WIDTH);
-    reader = new IntervalMonthDayNanoReaderImpl(IntervalMonthDayNanoVector.this);
   }
 
-  /**
-   * Get a reader that supports reading values from this vector.
-   *
-   * @return Field Reader for this vector
-   */
   @Override
-  public FieldReader getReader() {
-    return reader;
+  protected FieldReader getReaderImpl() {
+    return new IntervalMonthDayNanoReaderImpl(IntervalMonthDayNanoVector.this);
   }
 
   /**
-   * Get minor type for this vector. The vector holds values belonging
-   * to a particular type.
+   * Get minor type for this vector. The vector holds values belonging to a particular type.
    *
    * @return {@link org.apache.arrow.vector.types.Types.MinorType}
    */
@@ -105,36 +93,32 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
     return MinorType.INTERVALMONTHDAYNANO;
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value retrieval methods                        |
-   |                                                                |
-   *----------------------------------------------------------------*/
+  |                                                                |
+  |          vector value retrieval methods                        |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
-   * Given a data buffer, get the number of months stored at a particular position
-   * in the vector.
+   * Given a data buffer, get the number of months stored at a particular position in the vector.
    *
    * <p>This method should not be used externally.
    *
    * @param buffer data buffer
-   * @param index  position of the element.
+   * @param index position of the element.
    * @return day value stored at the index.
    */
   public static int getMonths(final ArrowBuf buffer, final int index) {
     return buffer.getInt((long) index * TYPE_WIDTH);
   }
 
-
   /**
-   * Given a data buffer, get the number of days stored at a particular position
-   * in the vector.
+   * Given a data buffer, get the number of days stored at a particular position in the vector.
    *
    * <p>This method should not be used externally.
    *
    * @param buffer data buffer
-   * @param index  position of the element.
+   * @param index position of the element.
    * @return day value stored at the index.
    */
   public static int getDays(final ArrowBuf buffer, final int index) {
@@ -142,13 +126,13 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Given a data buffer, get the get the number of nanoseconds stored at a particular position
-   * in the vector.
+   * Given a data buffer, get the get the number of nanoseconds stored at a particular position in
+   * the vector.
    *
    * <p>This method should not be used externally.
    *
    * @param buffer data buffer
-   * @param index  position of the element.
+   * @param index position of the element.
    * @return nanoseconds value stored at the index.
    */
   public static long getNanoseconds(final ArrowBuf buffer, final int index) {
@@ -158,7 +142,7 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   /**
    * Get the element at the given index from the vector.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
   public ArrowBuf get(int index) throws IllegalStateException {
@@ -169,11 +153,10 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Get the element at the given index from the vector and
-   * sets the state in holder. If element at given index
-   * is null, holder.isSet will be zero.
+   * Get the element at the given index from the vector and sets the state in holder. If element at
+   * given index is null, holder.isSet will be zero.
    *
-   * @param index   position of element
+   * @param index position of element
    */
   public void get(int index, NullableIntervalMonthDayNanoHolder holder) {
     if (isSet(index) == 0) {
@@ -190,9 +173,10 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   /**
    * Same as {@link #get(int)}.
    *
-   * @param index   position of element
+   * @param index position of element
    * @return element at given index
    */
+  @Override
   public PeriodDuration getObject(int index) {
     if (isSet(index) == 0) {
       return null;
@@ -202,8 +186,8 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
       final int days = valueBuffer.getInt(startIndex + DAY_OFFSET);
       final long nanoseconds = valueBuffer.getLong(startIndex + NANOSECOND_OFFSET);
 
-      return new PeriodDuration(Period.ofMonths(months).plusDays(days),
-            Duration.ofNanos(nanoseconds));
+      return new PeriodDuration(
+          Period.ofMonths(months).plusDays(days), Duration.ofNanos(nanoseconds));
     }
   }
 
@@ -226,17 +210,16 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value setter methods                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |          vector value setter methods                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
    * Set the element at the given index to the given value.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void set(int index, ArrowBuf value) {
     BitVectorHelper.setBit(validityBuffer, index);
@@ -246,7 +229,7 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   /**
    * Set the element at the given index to the given value.
    *
-   * @param index          position of element
+   * @param index position of element
    * @param months months component of interval
    * @param days days component of interval
    * @param nanoseconds nanosecond component of interval
@@ -260,14 +243,14 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Set the element at the given index to the value set in data holder.
-   * If the value in holder is not indicated as set, element
-   * at the given index will be null.
+   * Set the element at the given index to the value set in data holder. If the value in holder is
+   * not indicated as set, element at the given index will be null.
    *
-   * @param index   position of element
-   * @param holder  nullable data holder for value of element
+   * @param index position of element
+   * @param holder nullable data holder for value of element
    */
-  public void set(int index, NullableIntervalMonthDayNanoHolder holder) throws IllegalArgumentException {
+  public void set(int index, NullableIntervalMonthDayNanoHolder holder)
+      throws IllegalArgumentException {
     if (holder.isSet < 0) {
       throw new IllegalArgumentException();
     } else if (holder.isSet > 0) {
@@ -280,20 +263,19 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   /**
    * Set the element at the given index to the value set in data holder.
    *
-   * @param index   position of element
-   * @param holder  data holder for value of element
+   * @param index position of element
+   * @param holder data holder for value of element
    */
   public void set(int index, IntervalMonthDayNanoHolder holder) {
     set(index, holder.months, holder.days, holder.nanoseconds);
   }
 
   /**
-   * Same as {@link #set(int, ArrowBuf)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, ArrowBuf)} except that it handles the case when index is greater than
+   * or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param value   value of element
+   * @param index position of element
+   * @param value value of element
    */
   public void setSafe(int index, ArrowBuf value) {
     handleSafe(index);
@@ -301,14 +283,13 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Same as {@link #set(int, int, int, long)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, int, int, long)} except that it handles the case when index is greater
+   * than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index          position of element
-   * @param months         months for the interval
-   * @param days           days for the interval
-   * @param nanoseconds   nanoseconds for the interval
+   * @param index position of element
+   * @param months months for the interval
+   * @param days days for the interval
+   * @param nanoseconds nanoseconds for the interval
    */
   public void setSafe(int index, int months, int days, long nanoseconds) {
     handleSafe(index);
@@ -316,25 +297,24 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Same as {@link #set(int, NullableIntervalMonthDayNanoHolder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, NullableIntervalMonthDayNanoHolder)} except that it handles the case
+   * when index is greater than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param holder  nullable data holder for value of element
+   * @param index position of element
+   * @param holder nullable data holder for value of element
    */
-  public void setSafe(int index, NullableIntervalMonthDayNanoHolder holder) throws IllegalArgumentException {
+  public void setSafe(int index, NullableIntervalMonthDayNanoHolder holder)
+      throws IllegalArgumentException {
     handleSafe(index);
     set(index, holder);
   }
 
   /**
-   * Same as {@link #set(int, IntervalMonthDayNanoHolder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, IntervalMonthDayNanoHolder)} except that it handles the case when
+   * index is greater than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index   position of element
-   * @param holder  data holder for value of element
+   * @param index position of element
+   * @param holder data holder for value of element
    */
   public void setSafe(int index, IntervalMonthDayNanoHolder holder) {
     handleSafe(index);
@@ -342,8 +322,8 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Store the given value at a particular position in the vector. isSet indicates
-   * whether the value is NULL or not.
+   * Store the given value at a particular position in the vector. isSet indicates whether the value
+   * is NULL or not.
    *
    * @param index position of the new value
    * @param isSet 0 for NULL value, 1 otherwise
@@ -360,9 +340,8 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   }
 
   /**
-   * Same as {@link #set(int, int, int, int, long)} except that it handles the case
-   * when index is greater than or equal to current value capacity of the
-   * vector.
+   * Same as {@link #set(int, int, int, int, long)} except that it handles the case when index is
+   * greater than or equal to current value capacity of the vector.
    *
    * @param index position of the new value
    * @param isSet 0 for NULL value, 1 otherwise
@@ -370,23 +349,19 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
    * @param days days component of interval
    * @param nanoseconds nanosecond component of interval
    */
-  public void setSafe(int index, int isSet, int months, int days,
-       long nanoseconds) {
+  public void setSafe(int index, int isSet, int months, int days, long nanoseconds) {
     handleSafe(index);
     set(index, isSet, months, days, nanoseconds);
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |                      vector transfer                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |                      vector transfer                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
-   * Construct a TransferPair comprising of this and a target vector of
-   * the same type.
+   * Construct a TransferPair comprising this and a target vector of the same type.
    *
    * @param ref name of the target vector
    * @param allocator allocator for the target vector
@@ -395,6 +370,18 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
   @Override
   public TransferPair getTransferPair(String ref, BufferAllocator allocator) {
     return new TransferImpl(ref, allocator);
+  }
+
+  /**
+   * Construct a TransferPair comprising of this and a target vector of the same type.
+   *
+   * @param field Field object used by the target vector
+   * @param allocator allocator for the target vector
+   * @return {@link TransferPair}
+   */
+  @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator) {
+    return new TransferImpl(field, allocator);
   }
 
   /**
@@ -413,6 +400,10 @@ public final class IntervalMonthDayNanoVector extends BaseFixedWidthVector {
 
     public TransferImpl(String ref, BufferAllocator allocator) {
       to = new IntervalMonthDayNanoVector(ref, field.getFieldType(), allocator);
+    }
+
+    public TransferImpl(Field field, BufferAllocator allocator) {
+      to = new IntervalMonthDayNanoVector(field, allocator);
     }
 
     public TransferImpl(IntervalMonthDayNanoVector to) {

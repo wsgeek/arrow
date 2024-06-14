@@ -14,14 +14,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.flight.sql;
 
 import org.apache.arrow.flight.sql.impl.FlightSql;
 
 /**
  * The result of cancelling a query.
+ *
+ * @deprecated Prefer {@link org.apache.arrow.flight.CancelStatus}.
  */
+@Deprecated
 public enum CancelResult {
   UNSPECIFIED,
   CANCELLED,

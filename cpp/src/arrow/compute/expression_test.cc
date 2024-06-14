@@ -31,7 +31,9 @@
 #include "arrow/compute/function_internal.h"
 #include "arrow/compute/registry.h"
 #include "arrow/testing/gtest_util.h"
+#include "arrow/testing/matchers.h"
 
+using testing::Eq;
 using testing::HasSubstr;
 using testing::UnorderedElementsAreArray;
 
@@ -61,6 +63,7 @@ const std::shared_ptr<Schema> kBoringSchema = schema({
     field("ts_ns", timestamp(TimeUnit::NANO)),
     field("ts_s", timestamp(TimeUnit::SECOND)),
     field("binary", binary()),
+    field("ts_s_utc", timestamp(TimeUnit::SECOND, "UTC")),
 });
 
 #define EXPECT_OK ARROW_EXPECT_OK
@@ -78,27 +81,11 @@ Expression add(Expression l, Expression r) {
   return call("add", {std::move(l), std::move(r)});
 }
 
-template <typename Actual, typename Expected>
-void ExpectResultsEqual(Actual&& actual, Expected&& expected) {
-  using MaybeActual = typename EnsureResult<typename std::decay<Actual>::type>::type;
-  using MaybeExpected = typename EnsureResult<typename std::decay<Expected>::type>::type;
-
-  MaybeActual maybe_actual(std::forward<Actual>(actual));
-  MaybeExpected maybe_expected(std::forward<Expected>(expected));
-
-  if (maybe_expected.ok()) {
-    EXPECT_EQ(maybe_actual, maybe_expected);
-  } else {
-    EXPECT_RAISES_WITH_CODE_AND_MESSAGE_THAT(
-        expected.status().code(), HasSubstr(expected.status().message()), maybe_actual);
-  }
-}
-
 const auto no_change = std::nullopt;
 
 TEST(ExpressionUtils, Comparison) {
-  auto Expect = [](Result<std::string> expected, Datum l, Datum r) {
-    ExpectResultsEqual(Comparison::Execute(l, r).Map(Comparison::GetName), expected);
+  auto cmp_name = [](Datum l, Datum r) {
+    return Comparison::Execute(l, r).Map(Comparison::GetName);
   };
 
   Datum zero(0), one(1), two(2), null(std::make_shared<Int32Scalar>());
@@ -106,27 +93,28 @@ TEST(ExpressionUtils, Comparison) {
   Datum dict_str(DictionaryScalar::Make(std::make_shared<Int32Scalar>(0),
                                         ArrayFromJSON(utf8(), R"(["a", "b", "c"])")));
 
-  Status not_impl = Status::NotImplemented("no kernel matching input types");
+  auto RaisesNotImpl =
+      Raises(StatusCode::NotImplemented, HasSubstr("no kernel matching input types"));
 
-  Expect("equal", one, one);
-  Expect("less", one, two);
-  Expect("greater", one, zero);
+  EXPECT_THAT(cmp_name(one, one), ResultWith(Eq("equal")));
+  EXPECT_THAT(cmp_name(one, two), ResultWith(Eq("less")));
+  EXPECT_THAT(cmp_name(one, zero), ResultWith(Eq("greater")));
 
-  Expect("na", one, null);
-  Expect("na", null, one);
+  EXPECT_THAT(cmp_name(one, null), ResultWith(Eq("na")));
+  EXPECT_THAT(cmp_name(null, one), ResultWith(Eq("na")));
 
   // strings and ints are not comparable without explicit casts
-  Expect(not_impl, str, one);
-  Expect(not_impl, one, str);
-  Expect(not_impl, str, null);  // not even null ints
+  EXPECT_THAT(cmp_name(str, one), RaisesNotImpl);
+  EXPECT_THAT(cmp_name(one, str), RaisesNotImpl);
+  EXPECT_THAT(cmp_name(str, null), RaisesNotImpl);  // not even null ints
 
   // string -> binary implicit cast allowed
-  Expect("equal", str, bin);
-  Expect("equal", bin, str);
+  EXPECT_THAT(cmp_name(str, bin), ResultWith(Eq("equal")));
+  EXPECT_THAT(cmp_name(bin, str), ResultWith(Eq("equal")));
 
   // dict_str -> string, implicit casts allowed
-  Expect("less", dict_str, str);
-  Expect("less", dict_str, bin);
+  EXPECT_THAT(cmp_name(dict_str, str), ResultWith(Eq("less")));
+  EXPECT_THAT(cmp_name(dict_str, bin), ResultWith(Eq("less")));
 }
 
 TEST(ExpressionUtils, StripOrderPreservingCasts) {
@@ -275,8 +263,9 @@ TEST(Expression, ToString) {
   auto in_12 = call("index_in", {field_ref("beta")},
                     compute::SetLookupOptions{ArrayFromJSON(int32(), "[1,2]")});
 
-  EXPECT_EQ(in_12.ToString(),
-            "index_in(beta, {value_set=int32:[\n  1,\n  2\n], skip_nulls=false})");
+  EXPECT_EQ(
+      in_12.ToString(),
+      "index_in(beta, {value_set=int32:[\n  1,\n  2\n], null_matching_behavior=MATCH})");
 
   EXPECT_EQ(and_(field_ref("a"), field_ref("b")).ToString(), "(a and b)");
   EXPECT_EQ(or_(field_ref("a"), field_ref("b")).ToString(), "(a or b)");
@@ -461,6 +450,29 @@ TEST(Expression, IsSatisfiable) {
     // fill_na)
     EXPECT_TRUE(Bind(call("is_null", {never_true})).IsSatisfiable());
   }
+
+  for (const auto& might_true : {
+           // N.B. this is "or_kleene"
+           or_(literal(false), field_ref("bool")),
+           or_(literal(null), field_ref("bool")),
+           call("or", {literal(false), field_ref("bool")}),
+           call("or", {literal(null), field_ref("bool")}),
+       }) {
+    ARROW_SCOPED_TRACE(might_true.ToString());
+    EXPECT_TRUE(Bind(might_true).IsSatisfiable());
+  }
+
+  for (const auto& never_true : {
+           // N.B. this is "or_kleene"
+           or_(literal(false), literal(null)),
+           call("or", {literal(false), literal(null)}),
+       }) {
+    ARROW_SCOPED_TRACE(never_true.ToString());
+    EXPECT_FALSE(Bind(never_true).IsSatisfiable());
+    // ... but it may appear in satisfiable filters if coalesced (for example, wrapped in
+    // fill_na)
+    EXPECT_TRUE(Bind(call("is_null", {never_true})).IsSatisfiable());
+  }
 }
 
 TEST(Expression, FieldsInExpression) {
@@ -592,6 +604,31 @@ TEST(Expression, BindCall) {
                 add(cast(field_ref("i32"), float32()), literal(3.5F)));
 }
 
+TEST(Expression, BindWithAliasCasts) {
+  auto fm = GetFunctionRegistry();
+  EXPECT_OK(fm->AddAlias("alias_cast", "cast"));
+
+  auto expr = call("alias_cast", {field_ref("f1")}, CastOptions::Unsafe(arrow::int32()));
+  EXPECT_FALSE(expr.IsBound());
+
+  auto schema = arrow::schema({field("f1", decimal128(30, 3))});
+  ExpectBindsTo(expr, no_change, &expr, *schema);
+}
+
+TEST(Expression, BindWithDecimalArithmeticOps) {
+  for (std::string arith_op : {"add", "subtract", "multiply", "divide"}) {
+    auto expr = call(arith_op, {field_ref("d1"), field_ref("d2")});
+    EXPECT_FALSE(expr.IsBound());
+
+    static const std::vector<std::pair<int, int>> scales = {{3, 9}, {6, 6}, {9, 3}};
+    for (auto s : scales) {
+      auto schema = arrow::schema(
+          {field("d1", decimal256(30, s.first)), field("d2", decimal256(20, s.second))});
+      ExpectBindsTo(expr, no_change, &expr, *schema);
+    }
+  }
+}
+
 TEST(Expression, BindWithImplicitCasts) {
   for (auto cmp : {equal, not_equal, less, less_equal, greater, greater_equal}) {
     // cast arguments to common numeric type
@@ -620,6 +657,18 @@ TEST(Expression, BindWithImplicitCasts) {
                       literal(std::make_shared<TimestampScalar>(0, TimeUnit::NANO))),
                   cmp(field_ref("ts_s"),
                       literal(std::make_shared<TimestampScalar>(0, TimeUnit::SECOND))));
+    // GH-37110
+    ExpectBindsTo(
+        cmp(field_ref("ts_s_utc"),
+            literal(std::make_shared<TimestampScalar>(0, TimeUnit::NANO, "UTC"))),
+        cmp(field_ref("ts_s_utc"),
+            literal(std::make_shared<TimestampScalar>(0, TimeUnit::SECOND, "UTC"))));
+    ExpectBindsTo(
+        cmp(field_ref("ts_s_utc"),
+            literal(std::make_shared<TimestampScalar>(123000, TimeUnit::NANO, "UTC"))),
+        cmp(field_ref("ts_s_utc"),
+            literal(std::make_shared<TimestampScalar>(123, TimeUnit::MICRO, "UTC"))));
+
     ExpectBindsTo(
         cmp(field_ref("binary"), literal(std::make_shared<LargeBinaryScalar>("foo"))),
         cmp(field_ref("binary"), literal(std::make_shared<BinaryScalar>("foo"))));
@@ -836,6 +885,62 @@ TEST(Expression, ExecuteCall) {
     {"a": {"a": 6.125, "b": 3.375}},
     {"a": {"a": 0.0,   "b": 1}},
     {"a": {"a": -1,    "b": 4.75}}
+  ])"));
+}
+
+TEST(Expression, ExecuteCallWithNoArguments) {
+  const int kCount = 10;
+  auto random_options = RandomOptions::FromSeed(/*seed=*/0);
+  ExecBatch input({}, kCount);
+
+  Expression random_expr = call("random", {}, random_options);
+  ASSERT_OK_AND_ASSIGN(random_expr, random_expr.Bind(float64()));
+  ASSERT_OK_AND_ASSIGN(auto simplify_expr,
+                       SimplifyWithGuarantee(random_expr, input.guarantee));
+
+  ASSERT_OK_AND_ASSIGN(Datum actual, ExecuteScalarExpression(simplify_expr, input));
+  compute::ExecContext* exec_context = default_exec_context();
+  ASSERT_OK_AND_ASSIGN(auto function,
+                       exec_context->func_registry()->GetFunction("random"));
+  ASSERT_OK_AND_ASSIGN(Datum expected,
+                       function->Execute(input, &random_options, exec_context));
+  AssertDatumsEqual(actual, expected, /*verbose=*/true);
+
+  EXPECT_EQ(actual.length(), kCount);
+}
+
+TEST(Expression, ExecuteChunkedArray) {
+  // GH-41923: compute should generate the right result if input
+  // ExecBatch is `chunked_array`.
+  auto input_schema = struct_({field("a", struct_({
+                                              field("a", float64()),
+                                              field("b", float64()),
+                                          }))});
+
+  auto chunked_array_input = ChunkedArrayFromJSON(input_schema, {R"([
+    {"a": {"a": 6.125, "b": 3.375}},
+    {"a": {"a": 0.0,   "b": 1}}
+  ])",
+                                                                 R"([
+    {"a": {"a": -1,    "b": 4.75}}
+  ])"});
+
+  ASSERT_OK_AND_ASSIGN(auto table_input,
+                       Table::FromChunkedStructArray(chunked_array_input));
+
+  auto expr = add(field_ref(FieldRef("a", "a")), field_ref(FieldRef("a", "b")));
+
+  ASSERT_OK_AND_ASSIGN(expr, expr.Bind(input_schema));
+  std::vector<Datum> inputs{table_input->column(0)};
+  ExecBatch batch{inputs, 3};
+
+  ASSERT_OK_AND_ASSIGN(Datum res, ExecuteScalarExpression(expr, batch));
+
+  AssertDatumsEqual(res, ArrayFromJSON(float64(),
+                                       R"([
+    9.5,
+    1,
+    3.75
   ])"));
 }
 
@@ -1326,6 +1431,36 @@ TEST(Expression, SingleComparisonGuarantees) {
       }
     }
   }
+}
+
+static Status RegisterMyRandom() {
+  const std::string name = "my_random";
+  auto func = std::make_shared<ScalarFunction>(name, Arity::Unary(), FunctionDoc::Empty(),
+                                               nullptr, /*is_pure=*/false);
+
+  auto func_exec = [](KernelContext* /*ctx*/, const ExecSpan& /*batch*/,
+                      ExecResult* /*out*/) -> Status { return Status::OK(); };
+
+  ScalarKernel kernel({int32()}, float64(), func_exec);
+  ARROW_RETURN_NOT_OK(func->AddKernel(kernel));
+
+  auto registry = GetFunctionRegistry();
+  ARROW_RETURN_NOT_OK(registry->AddFunction(std::move(func)));
+
+  return Status::OK();
+}
+
+TEST(Expression, SimplifyImpureFunctionCall) {
+  // skip simplification for impure function with no arguments
+  auto impure_expr = call("random", {});
+  Simplify{impure_expr}.WithGuarantee(literal("")).Expect(impure_expr);
+
+  // simplify impure function's arguments
+  ASSERT_OK(RegisterMyRandom());
+  auto pure_expr = call("add", {field_ref("i32"), literal(3)});
+  Simplify{call("my_random", {pure_expr})}
+      .WithGuarantee(equal(field_ref("i32"), literal(1)))
+      .Expect(call("my_random", {literal(4)}));
 }
 
 TEST(Expression, SimplifyWithGuarantee) {

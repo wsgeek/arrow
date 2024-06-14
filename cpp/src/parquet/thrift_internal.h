@@ -46,7 +46,7 @@
 #include "parquet/statistics.h"
 #include "parquet/types.h"
 
-#include "generated/parquet_types.h"  // IYWU pragma: export
+#include "generated/parquet_types.h"  // IWYU pragma: export
 
 namespace parquet {
 
@@ -403,7 +403,7 @@ class ThriftDeserializer {
   // set to the actual length of the header.
   template <class T>
   void DeserializeMessage(const uint8_t* buf, uint32_t* len, T* deserialized_msg,
-                          const std::shared_ptr<Decryptor>& decryptor = NULLPTR) {
+                          Decryptor* decryptor = NULLPTR) {
     if (decryptor == NULLPTR) {
       // thrift message is not encrypted
       DeserializeUnencryptedMessage(buf, len, deserialized_msg);
@@ -435,8 +435,7 @@ class ThriftDeserializer {
 #if PARQUET_THRIFT_VERSION_MAJOR > 0 || PARQUET_THRIFT_VERSION_MINOR >= 14
     auto conf = std::make_shared<apache::thrift::TConfiguration>();
     conf->setMaxMessageSize(std::numeric_limits<int>::max());
-    return std::shared_ptr<ThriftBuffer>(
-        new ThriftBuffer(buf, len, ThriftBuffer::OBSERVE, conf));
+    return std::make_shared<ThriftBuffer>(buf, len, ThriftBuffer::OBSERVE, conf);
 #else
     return std::make_shared<ThriftBuffer>(buf, len);
 #endif
@@ -447,13 +446,12 @@ class ThriftDeserializer {
                                      T* deserialized_msg) {
     // Deserialize msg bytes into c++ thrift msg using memory transport.
     auto tmem_transport = CreateReadOnlyMemoryBuffer(const_cast<uint8_t*>(buf), *len);
-    apache::thrift::protocol::TCompactProtocolFactoryT<ThriftBuffer> tproto_factory;
-    // Protect against CPU and memory bombs
-    tproto_factory.setStringSizeLimit(string_size_limit_);
-    tproto_factory.setContainerSizeLimit(container_size_limit_);
-    auto tproto = tproto_factory.getProtocol(tmem_transport);
+    auto tproto = apache::thrift::protocol::TCompactProtocolT<ThriftBuffer>(
+        tmem_transport, string_size_limit_, container_size_limit_);
     try {
-      deserialized_msg->read(tproto.get());
+      deserialized_msg
+          ->template read<apache::thrift::protocol::TCompactProtocolT<ThriftBuffer>>(
+              &tproto);
     } catch (std::exception& e) {
       std::stringstream ss;
       ss << "Couldn't deserialize thrift: " << e.what() << "\n";
@@ -496,7 +494,7 @@ class ThriftSerializer {
 
   template <class T>
   int64_t Serialize(const T* obj, ArrowOutputStream* out,
-                    const std::shared_ptr<Encryptor>& encryptor = NULLPTR) {
+                    Encryptor* encryptor = NULLPTR) {
     uint8_t* out_buffer;
     uint32_t out_length;
     SerializeToBuffer(obj, &out_length, &out_buffer);
@@ -524,8 +522,7 @@ class ThriftSerializer {
   }
 
   int64_t SerializeEncryptedObj(ArrowOutputStream* out, uint8_t* out_buffer,
-                                uint32_t out_length,
-                                const std::shared_ptr<Encryptor>& encryptor) {
+                                uint32_t out_length, Encryptor* encryptor) {
     auto cipher_buffer = std::static_pointer_cast<ResizableBuffer>(AllocateBuffer(
         encryptor->pool(),
         static_cast<int64_t>(encryptor->CiphertextSizeDelta() + out_length)));

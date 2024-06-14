@@ -41,9 +41,9 @@ Building requires:
 
 * A C++17-enabled compiler. On Linux, gcc 7.1 and higher should be
   sufficient. For Windows, at least Visual Studio VS2017 is required.
-* CMake 3.5 or higher
+* CMake 3.16 or higher
 * On Linux and macOS, either ``make`` or ``ninja`` build utilities
-* At least 1GB of RAM for a minimal build, 4GB for a minimal  
+* At least 1GB of RAM for a minimal build, 4GB for a minimal
   debug build with tests and 8GB for a full build using
   :ref:`docker <docker-builds>`.
 
@@ -67,7 +67,7 @@ On Alpine Linux:
            gcc \
            ninja \
            make
-           
+
 On Fedora Linux:
 
 .. code-block:: shell
@@ -99,7 +99,7 @@ On macOS, you can use `Homebrew <https://brew.sh/>`_:
 With `vcpkg <https://github.com/Microsoft/vcpkg>`_:
 
 .. code-block:: shell
-   
+
    git clone https://github.com/apache/arrow.git
    cd arrow
    vcpkg install \
@@ -254,6 +254,34 @@ Several build types are possible:
 * ``Release``: applies compiler optimizations and removes debug information
   from the binary.
 
+.. note::
+
+   These build types provide suitable optimization/debug flags by
+   default but you can change them by specifying
+   ``-DARROW_C_FLAGS_${BUILD_TYPE}=...`` and/or
+   ``-DARROW_CXX_FLAGS_${BUILD_TYPE}=...``. ``${BUILD_TYPE}`` is upper
+   case of build type. For example, ``DEBUG``
+   (``-DARROW_C_FLAGS_DEBUG=...`` / ``-DARROW_CXX_FLAGS_DEBUG=...``) for the
+   ``Debug`` build type and ``RELWITHDEBINFO``
+   (``-DARROW_C_FLAGS_RELWITHDEBINFO=...`` /
+   ``-DARROW_CXX_FLAGS_RELWITHDEBINFO=...``) for the ``RelWithDebInfo``
+   build type.
+
+   For example, you can use ``-O3`` as an optimization flag for the ``Release``
+   build type by passing ``-DARROW_CXX_FLAGS_RELEASE=-O3`` .
+   You can use ``-g3`` as a debug flag for the ``Debug`` build type
+   by passing ``-DARROW_CXX_FLAGS_DEBUG=-g3`` .
+
+   You can also use the standard ``CMAKE_C_FLAGS_${BUILD_TYPE}``
+   and ``CMAKE_CXX_FLAGS_${BUILD_TYPE}`` variables but
+   the ``ARROW_C_FLAGS_${BUILD_TYPE}`` and
+   ``ARROW_CXX_FLAGS_${BUILD_TYPE}`` variables are
+   recommended. The ``CMAKE_C_FLAGS_${BUILD_TYPE}`` and
+   ``CMAKE_CXX_FLAGS_${BUILD_TYPE}`` variables replace all default
+   flags provided by CMake, while ``ARROW_C_FLAGS_${BUILD_TYPE}`` and
+   ``ARROW_CXX_FLAGS_${BUILD_TYPE}`` just append the
+   flags specified, which allows selectively overriding some of the defaults.
+
 You can also run default build with flag ``-DARROW_EXTRA_ERROR_CONTEXT=ON``, see
 :ref:`cpp-extra-debugging`.
 
@@ -284,7 +312,7 @@ depends on ``python`` being available).
 
 On some Linux distributions, running the test suite might require setting an
 explicit locale. If you see any locale-related errors, try setting the
-environment variable (which requires the `locales` package or equivalent):
+environment variable (which requires the ``locales`` package or equivalent):
 
 .. code-block::
 
@@ -334,7 +362,7 @@ boolean flags to ``cmake``.
 * ``-DARROW_GCS=ON``: Build Arrow with GCS support (requires the GCloud SDK for C++)
 * ``-DARROW_HDFS=ON``: Arrow integration with libhdfs for accessing the Hadoop
   Filesystem
-* ``-DARROW_JEMALLOC=ON``: Build the Arrow jemalloc-based allocator, on by default 
+* ``-DARROW_JEMALLOC=ON``: Build the Arrow jemalloc-based allocator, on by default
 * ``-DARROW_JSON=ON``: JSON reader module
 * ``-DARROW_MIMALLOC=ON``: Build the Arrow mimalloc-based allocator
 * ``-DARROW_ORC=ON``: Arrow integration with Apache ORC
@@ -346,7 +374,8 @@ boolean flags to ``cmake``.
   ``ARROW_FILESYSTEM``, ``ARROW_HDFS``, and ``ARROW_JSON`` directly
   instead.
 * ``-DARROW_S3=ON``: Support for Amazon S3-compatible filesystems
-* ``-DARROW_WITH_RE2=ON`` Build with support for regular expressions using the re2 
+* ``-DARROW_SUBSTRAIT=ON``: Build with support for Substrait
+* ``-DARROW_WITH_RE2=ON``: Build with support for regular expressions using the re2
   library, on by default and used when ``ARROW_COMPUTE`` or ``ARROW_GANDIVA`` is ``ON``
 * ``-DARROW_WITH_UTF8PROC=ON``: Build with support for Unicode properties using
   the utf8proc library, on by default and used when ``ARROW_COMPUTE`` or ``ARROW_GANDIVA``
@@ -418,12 +447,7 @@ several times with different options if you want to exercise all of them.
 CMake version requirements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-While we support CMake 3.5 and higher, some features require a newer version of
-CMake:
-
-* Building the benchmarks requires 3.6 or higher
-* Building zstd from source requires 3.7 or higher
-* Building Gandiva JNI bindings requires 3.11 or higher
+We support CMake 3.16 and higher.
 
 LLVM and Clang Tools
 ~~~~~~~~~~~~~~~~~~~~
@@ -448,7 +472,7 @@ The build system supports a number of third-party dependencies
   * ``c-ares``: a dependency of gRPC
   * ``gflags``: for command line utilities (formerly Googleflags)
   * ``GLOG``: for logging
-  * ``google_cloud_cpp_storage``: for Google Cloud Storage support, requires 
+  * ``google_cloud_cpp_storage``: for Google Cloud Storage support, requires
     system cURL and can use the ``BUNDLED`` method described below
   * ``gRPC``: for remote procedure calls
   * ``GTest``: Googletest, for testing
@@ -603,9 +627,10 @@ outputs like:
 Deprecations and API Changes
 ----------------------------
 
-We use the compiler definition ``ARROW_NO_DEPRECATED_API`` to disable APIs that
-have been deprecated. It is a good practice to compile third party applications
-with this flag to proactively catch and account for API changes.
+We use the marco ``ARROW_DEPRECATED`` which wraps C++ deprecated attribute for
+APIs that have been deprecated. It is a good practice to compile third party
+applications with ``-Werror=deprecated-declarations`` (for GCC/Clang or similar
+flags of other compilers) to proactively catch and account for API changes.
 
 Modular Build Targets
 ---------------------

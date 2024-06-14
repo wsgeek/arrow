@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.vector;
 
 import static org.apache.arrow.vector.NullCheckingForGet.NULL_CHECKING_ENABLED;
@@ -31,19 +30,16 @@ import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.util.TransferPair;
 
 /**
- * IntVector implements a fixed width (4 bytes) vector of
- * integer values which could be null. A validity buffer (bit vector) is
- * maintained to track which elements in the vector are null.
+ * IntVector implements a fixed width (4 bytes) vector of integer values which could be null. A
+ * validity buffer (bit vector) is maintained to track which elements in the vector are null.
  */
 public final class IntVector extends BaseFixedWidthVector implements BaseIntVector {
   public static final byte TYPE_WIDTH = 4;
-  private final FieldReader reader;
 
   /**
-   * Instantiate a IntVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a IntVector. This doesn't allocate any memory for the data in vector.
    *
-   * @param name      name of the vector
+   * @param name name of the vector
    * @param allocator allocator for memory management.
    */
   public IntVector(String name, BufferAllocator allocator) {
@@ -51,10 +47,9 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Instantiate a IntVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a IntVector. This doesn't allocate any memory for the data in vector.
    *
-   * @param name      name of the vector
+   * @param name name of the vector
    * @param fieldType type of Field materialized by this vector
    * @param allocator allocator for memory management.
    */
@@ -63,30 +58,22 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Instantiate a IntVector. This doesn't allocate any memory for
-   * the data in vector.
+   * Instantiate a IntVector. This doesn't allocate any memory for the data in vector.
    *
    * @param field field materialized by this vector
    * @param allocator allocator for memory management.
    */
   public IntVector(Field field, BufferAllocator allocator) {
     super(field, allocator, TYPE_WIDTH);
-    reader = new IntReaderImpl(IntVector.this);
   }
 
-  /**
-   * Get a reader that supports reading values from this vector.
-   *
-   * @return Field Reader for this vector
-   */
   @Override
-  public FieldReader getReader() {
-    return reader;
+  protected FieldReader getReaderImpl() {
+    return new IntReaderImpl(IntVector.this);
   }
 
   /**
-   * Get minor type for this vector. The vector holds values belonging
-   * to a particular type.
+   * Get minor type for this vector. The vector holds values belonging to a particular type.
    *
    * @return {@link org.apache.arrow.vector.types.Types.MinorType}
    */
@@ -95,13 +82,11 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
     return MinorType.INT;
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value retrieval methods                        |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |          vector value retrieval methods                        |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
    * Get the element at the given index from the vector.
@@ -117,9 +102,8 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Get the element at the given index from the vector and
-   * sets the state in holder. If element at given index
-   * is null, holder.isSet will be zero.
+   * Get the element at the given index from the vector and sets the state in holder. If element at
+   * given index is null, holder.isSet will be zero.
    *
    * @param index position of element
    */
@@ -138,6 +122,7 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
    * @param index position of element
    * @return element at given index
    */
+  @Override
   public Integer getObject(int index) {
     if (isSet(index) == 0) {
       return null;
@@ -147,11 +132,10 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /*----------------------------------------------------------------*
-   |                                                                |
-   |          vector value setter methods                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |          vector value setter methods                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   private void setValue(int index, int value) {
     valueBuffer.setInt((long) index * TYPE_WIDTH, value);
@@ -169,11 +153,10 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Set the element at the given index to the value set in data holder.
-   * If the value in holder is not indicated as set, element in the
-   * at the given index will be null.
+   * Set the element at the given index to the value set in data holder. If the value in holder is
+   * not indicated as set, element in the at the given index will be null.
    *
-   * @param index  position of element
+   * @param index position of element
    * @param holder nullable data holder for value of element
    */
   public void set(int index, NullableIntHolder holder) throws IllegalArgumentException {
@@ -190,7 +173,7 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   /**
    * Set the element at the given index to the value set in data holder.
    *
-   * @param index  position of element
+   * @param index position of element
    * @param holder data holder for value of element
    */
   public void set(int index, IntHolder holder) {
@@ -199,9 +182,8 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Same as {@link #set(int, int)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, int)} except that it handles the case when index is greater than or
+   * equal to existing value capacity {@link #getValueCapacity()}.
    *
    * @param index position of element
    * @param value value of element
@@ -212,11 +194,10 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Same as {@link #set(int, NullableIntHolder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, NullableIntHolder)} except that it handles the case when index is
+   * greater than or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index  position of element
+   * @param index position of element
    * @param holder nullable data holder for value of element
    */
   public void setSafe(int index, NullableIntHolder holder) throws IllegalArgumentException {
@@ -225,11 +206,10 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Same as {@link #set(int, IntHolder)} except that it handles the
-   * case when index is greater than or equal to existing
-   * value capacity {@link #getValueCapacity()}.
+   * Same as {@link #set(int, IntHolder)} except that it handles the case when index is greater than
+   * or equal to existing value capacity {@link #getValueCapacity()}.
    *
-   * @param index  position of element
+   * @param index position of element
    * @param holder data holder for value of element
    */
   public void setSafe(int index, IntHolder holder) {
@@ -238,8 +218,8 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Store the given value at a particular position in the vector. isSet indicates
-   * whether the value is NULL or not.
+   * Store the given value at a particular position in the vector. isSet indicates whether the value
+   * is NULL or not.
    *
    * @param index position of the new value
    * @param isSet 0 for NULL value, 1 otherwise
@@ -254,9 +234,8 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Same as {@link #set(int, int, int)} except that it handles the case
-   * when index is greater than or equal to current value capacity of the
-   * vector.
+   * Same as {@link #set(int, int, int)} except that it handles the case when index is greater than
+   * or equal to current value capacity of the vector.
    *
    * @param index position of the new value
    * @param isSet 0 for NULL value, 1 otherwise
@@ -268,38 +247,46 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
   }
 
   /**
-   * Given a data buffer, get the value stored at a particular position
-   * in the vector.
+   * Given a data buffer, get the value stored at a particular position in the vector.
    *
    * <p>This method should not be used externally.
    *
    * @param buffer data buffer
-   * @param index  position of the element.
+   * @param index position of the element.
    * @return value stored at the index.
    */
   public static int get(final ArrowBuf buffer, final int index) {
     return buffer.getInt((long) index * TYPE_WIDTH);
   }
 
-
   /*----------------------------------------------------------------*
-   |                                                                |
-   |                      vector transfer                           |
-   |                                                                |
-   *----------------------------------------------------------------*/
-
+  |                                                                |
+  |                      vector transfer                           |
+  |                                                                |
+  *----------------------------------------------------------------*/
 
   /**
-   * Construct a TransferPair comprising of this and a target vector of
-   * the same type.
+   * Construct a TransferPair comprising this and a target vector of the same type.
    *
-   * @param ref       name of the target vector
+   * @param ref name of the target vector
    * @param allocator allocator for the target vector
    * @return {@link TransferPair}
    */
   @Override
   public TransferPair getTransferPair(String ref, BufferAllocator allocator) {
     return new TransferImpl(ref, allocator);
+  }
+
+  /**
+   * Construct a TransferPair comprising this and a target vector of the same type.
+   *
+   * @param field Field object used by the target vector
+   * @param allocator allocator for the target vector
+   * @return {@link TransferPair}
+   */
+  @Override
+  public TransferPair getTransferPair(Field field, BufferAllocator allocator) {
+    return new TransferImpl(field, allocator);
   }
 
   /**
@@ -333,6 +320,10 @@ public final class IntVector extends BaseFixedWidthVector implements BaseIntVect
 
     public TransferImpl(String ref, BufferAllocator allocator) {
       to = new IntVector(ref, field.getFieldType(), allocator);
+    }
+
+    public TransferImpl(Field field, BufferAllocator allocator) {
+      to = new IntVector(field, allocator);
     }
 
     public TransferImpl(IntVector to) {

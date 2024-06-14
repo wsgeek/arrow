@@ -17,93 +17,77 @@
 
 #pragma once
 
-
 #include "arrow/array.h"
 #include "arrow/array/data.h"
 #include "arrow/array/util.h"
 
-#include "arrow/builder.h"
 #include "arrow/type_traits.h"
 
 #include "arrow/matlab/array/proxy/array.h"
-#include "arrow/matlab/bit/bit_pack_matlab_logical_array.h"
+#include "arrow/matlab/type/proxy/traits.h"
+
+#include "arrow/matlab/bit/pack.h"
+#include "arrow/matlab/bit/unpack.h"
+#include "arrow/matlab/buffer/matlab_buffer.h"
+#include "arrow/matlab/error/error.h"
 
 #include "libmexclass/proxy/Proxy.h"
 
 namespace arrow::matlab::array::proxy {
 
-namespace {
-const uint8_t* getUnpackedValidityBitmap(const ::matlab::data::TypedArray<bool>& valid_elements) {
-    const auto valid_elements_iterator(valid_elements.cbegin());
-    return reinterpret_cast<const uint8_t*>(valid_elements_iterator.operator->());
-}
-} // anonymous namespace
-
-template<typename CType>
+template <typename ArrowType>
 class NumericArray : public arrow::matlab::array::proxy::Array {
-    public:
-        NumericArray(const libmexclass::proxy::FunctionArguments& constructor_arguments)
-            : arrow::matlab::array::proxy::Array(constructor_arguments) {
-            using ArrowType = typename arrow::CTypeTraits<CType>::ArrowType;
-            using BuilderType = typename arrow::CTypeTraits<CType>::BuilderType;
+ public:
+  NumericArray(const std::shared_ptr<arrow::NumericArray<ArrowType>> numeric_array)
+      : arrow::matlab::array::proxy::Array{std::move(numeric_array)} {
+    REGISTER_METHOD(NumericArray, toMATLAB);
+  }
 
-            // Get the mxArray from constructor arguments
-            const ::matlab::data::TypedArray<CType> numeric_mda = constructor_arguments[0];
-            const ::matlab::data::TypedArray<bool> make_copy = constructor_arguments[1];
+  static libmexclass::proxy::MakeResult make(
+      const libmexclass::proxy::FunctionArguments& constructor_arguments) {
+    using MatlabBuffer = arrow::matlab::buffer::MatlabBuffer;
+    using CType = typename arrow::TypeTraits<ArrowType>::CType;
+    using NumericArray = arrow::NumericArray<ArrowType>;
+    using NumericArrayProxy = typename proxy::NumericArray<ArrowType>;
 
-            const auto has_validity_bitmap = constructor_arguments.getNumberOfElements() > 2;
+    ::matlab::data::StructArray opts = constructor_arguments[0];
 
-            // Get raw pointer of mxArray
-            auto it(numeric_mda.cbegin());
-            auto dt = it.operator->();
+    // Get the mxArray from constructor arguments
+    const ::matlab::data::TypedArray<CType> numeric_mda = opts[0]["MatlabArray"];
+    const ::matlab::data::TypedArray<bool> valid_mda = opts[0]["Valid"];
 
-            const auto make_deep_copy = make_copy[0];
+    auto data_buffer = std::make_shared<MatlabBuffer>(numeric_mda);
 
-            if (make_deep_copy) {
-                // Get the unpacked validity bitmap (if it exists)
-                auto unpacked_validity_bitmap = has_validity_bitmap ? getUnpackedValidityBitmap(constructor_arguments[2]) : nullptr;
+    const auto data_type = arrow::TypeTraits<ArrowType>::type_singleton();
+    const auto length = static_cast<int64_t>(
+        numeric_mda.getNumberOfElements());  // cast size_t to int64_t
 
-                BuilderType builder;
-                auto st = builder.AppendValues(dt, numeric_mda.getNumberOfElements(), unpacked_validity_bitmap);
+    // Pack the validity bitmap values.
+    MATLAB_ASSIGN_OR_ERROR(auto packed_validity_bitmap, bit::packValid(valid_mda),
+                           error::BITPACK_VALIDITY_BITMAP_ERROR_ID);
+    auto array_data =
+        arrow::ArrayData::Make(data_type, length, {packed_validity_bitmap, data_buffer});
+    auto numeric_array =
+        std::static_pointer_cast<NumericArray>(arrow::MakeArray(array_data));
+    return std::make_shared<NumericArrayProxy>(std::move(numeric_array));
+  }
 
-                // TODO: handle error case
-                if (st.ok()) {
-                    auto maybe_array = builder.Finish();
-                    if (maybe_array.ok()) {
-                        array = *maybe_array;
-                    }
-                }
-            } else {
-                const auto data_type = arrow::CTypeTraits<CType>::type_singleton();
-                const auto length = static_cast<int64_t>(numeric_mda.getNumberOfElements()); // cast size_t to int64_t
+ protected:
+  void toMATLAB(libmexclass::proxy::method::Context& context) {
+    using CType = typename arrow::TypeTraits<ArrowType>::CType;
+    using NumericArray = arrow::NumericArray<ArrowType>;
 
-                // Do not make a copy when creating arrow::Buffer
-                auto data_buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(dt),
-                                                              sizeof(CType) * numeric_mda.getNumberOfElements());
+    const auto num_elements = static_cast<size_t>(array->length());
+    const auto numeric_array = std::static_pointer_cast<NumericArray>(array);
+    const CType* const data_begin = numeric_array->raw_values();
+    const CType* const data_end = data_begin + num_elements;
 
-                // Pack the validity bitmap values.
-                auto packed_validity_bitmap = has_validity_bitmap ? arrow::matlab::bit::bitPackMatlabLogicalArray(constructor_arguments[2]).ValueOrDie() : nullptr;
+    ::matlab::data::ArrayFactory factory;
 
-                auto array_data = arrow::ArrayData::Make(data_type, length, {packed_validity_bitmap, data_buffer});
-                array = arrow::MakeArray(array_data);
-            }
-        }
-
-    protected:
-        void toMATLAB(libmexclass::proxy::method::Context& context) override {
-            using ArrowArrayType = typename arrow::CTypeTraits<CType>::ArrayType;
-
-            const auto num_elements = static_cast<size_t>(array->length());
-            const auto numeric_array = std::static_pointer_cast<ArrowArrayType>(array);
-            const CType* const data_begin = numeric_array->raw_values();
-            const CType* const data_end = data_begin + num_elements;
-
-            ::matlab::data::ArrayFactory factory;
-
-            // Constructs a TypedArray from the raw values. Makes a copy.
-            ::matlab::data::TypedArray<CType> result = factory.createArray({num_elements, 1}, data_begin, data_end);
-            context.outputs[0] = result;
-        }
+    // Constructs a TypedArray from the raw values. Makes a copy.
+    ::matlab::data::TypedArray<CType> result =
+        factory.createArray({num_elements, 1}, data_begin, data_end);
+    context.outputs[0] = result;
+  }
 };
-
-}
+}  // namespace arrow::matlab::array::proxy

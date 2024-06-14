@@ -45,6 +45,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -94,6 +95,7 @@
 #include "arrow/result.h"
 #include "arrow/util/atfork_internal.h"
 #include "arrow/util/checked_cast.h"
+#include "arrow/util/config.h"
 #include "arrow/util/io_util.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/mutex.h"
@@ -115,11 +117,13 @@
 #include <fstream>
 #endif
 
-namespace arrow {
+#ifdef _WIN32
+#include <Windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
-using internal::checked_cast;
-
-namespace internal {
+namespace arrow::internal {
 
 namespace {
 
@@ -446,6 +450,13 @@ std::shared_ptr<StatusDetail> StatusDetailFromErrno(int errnum) {
     return nullptr;
   }
   return std::make_shared<ErrnoDetail>(errnum);
+}
+
+std::optional<int> ErrnoFromStatusDetail(const StatusDetail& detail) {
+  if (detail.type_id() == kErrnoDetailTypeId) {
+    return checked_cast<const ErrnoDetail&>(detail).errnum();
+  }
+  return std::nullopt;
 }
 
 #if _WIN32
@@ -1073,7 +1084,7 @@ Result<FileDescriptor> FileOpenReadable(const PlatformFilename& file_name) {
   }
 #endif
 
-  return std::move(fd);
+  return fd;
 }
 
 Result<FileDescriptor> FileOpenWritable(const PlatformFilename& file_name,
@@ -1137,7 +1148,7 @@ Result<FileDescriptor> FileOpenWritable(const PlatformFilename& file_name,
     // Seek to end, as O_APPEND does not necessarily do it
     RETURN_NOT_OK(lseek64_compat(fd.fd(), 0, SEEK_END));
   }
-  return std::move(fd);
+  return fd;
 }
 
 Result<int64_t> FileTell(int fd) {
@@ -1465,7 +1476,7 @@ Status MemoryMapRemap(void* addr, size_t old_size, size_t new_size, int fildes,
     return StatusFromMmapErrno("ftruncate failed");
   }
   // we set READ / WRITE flags on the new map, since we could only have
-  // unlarged a RW map in the first place
+  // enlarged a RW map in the first place
   *new_addr = mmap(NULL, new_size, PROT_READ | PROT_WRITE, MAP_SHARED, fildes, 0);
   if (*new_addr == MAP_FAILED) {
     return StatusFromMmapErrno("mmap failed");
@@ -1475,6 +1486,7 @@ Status MemoryMapRemap(void* addr, size_t old_size, size_t new_size, int fildes,
 }
 
 Status MemoryAdviseWillNeed(const std::vector<MemoryRegion>& regions) {
+#ifndef __EMSCRIPTEN__
   const auto page_size = static_cast<size_t>(GetPageSize());
   DCHECK_GT(page_size, 0);
   const size_t page_mask = ~(page_size - 1);
@@ -1530,6 +1542,9 @@ Status MemoryAdviseWillNeed(const std::vector<MemoryRegion>& regions) {
     }
   }
   return Status::OK();
+#else
+  return Status::OK();
+#endif
 #else
   return Status::OK();
 #endif
@@ -1896,7 +1911,8 @@ std::vector<NativePathString> GetPlatformTemporaryDirs() {
 }
 
 std::string MakeRandomName(int num_chars) {
-  static const std::string chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+  constexpr std::string_view chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+
   std::default_random_engine gen(
       static_cast<std::default_random_engine::result_type>(GetRandomSeed()));
   std::uniform_int_distribution<int> dist(0, static_cast<int>(chars.length() - 1));
@@ -1951,7 +1967,7 @@ Result<std::unique_ptr<TemporaryDir>> TemporaryDir::Make(const std::string& pref
   for (const auto& base_dir : base_dirs) {
     ARROW_ASSIGN_OR_RAISE(auto ptr, TryCreatingDirectory(base_dir));
     if (ptr) {
-      return std::move(ptr);
+      return ptr;
     }
     // Cannot create in this directory, try the next one
   }
@@ -2056,7 +2072,9 @@ Status SendSignal(int signum) {
 }
 
 Status SendSignalToThread(int signum, uint64_t thread_id) {
-#ifdef _WIN32
+#ifndef ARROW_ENABLE_THREADING
+  return Status::NotImplemented("Can't send signal with no threads");
+#elif defined(_WIN32)
   return Status::NotImplemented("Cannot send signal to specific thread on Windows");
 #else
   // Have to use a C-style cast because pthread_t can be a pointer *or* integer type
@@ -2206,5 +2224,58 @@ int64_t GetTotalMemoryBytes() {
 #endif
 }
 
-}  // namespace internal
-}  // namespace arrow
+Result<void*> LoadDynamicLibrary(const char* path) {
+#ifdef _WIN32
+  ARROW_ASSIGN_OR_RAISE(auto platform_path, PlatformFilename::FromString(path));
+  return LoadDynamicLibrary(platform_path);
+#else
+  constexpr int kFlags =
+      // All undefined symbols in the shared object are resolved before dlopen() returns.
+      RTLD_NOW
+      // Symbols defined in  this  shared  object are not made available to
+      // resolve references in subsequently loaded shared objects.
+      | RTLD_LOCAL;
+  if (void* handle = dlopen(path, kFlags)) return handle;
+  // dlopen(3) man page: "If dlopen() fails for any reason, it returns NULL."
+  // There is no null-returning non-error condition.
+  auto* error = dlerror();
+  return Status::IOError("dlopen(", path, ") failed: ", error ? error : "unknown error");
+#endif
+}
+
+Result<void*> LoadDynamicLibrary(const PlatformFilename& path) {
+#ifdef _WIN32
+  if (void* handle = LoadLibraryW(path.ToNative().c_str())) {
+    return handle;
+  }
+  // win32 api doc: "If the function fails, the return value is NULL."
+  // There is no null-returning non-error condition.
+  return IOErrorFromWinError(GetLastError(), "LoadLibrary(", path.ToString(), ") failed");
+#else
+  return LoadDynamicLibrary(path.ToNative().c_str());
+#endif
+}
+
+Result<void*> GetSymbol(void* handle, const char* name) {
+  if (handle == nullptr) {
+    return Status::Invalid("Attempting to retrieve symbol '", name,
+                           "' from null library handle");
+  }
+#ifdef _WIN32
+  if (void* sym = reinterpret_cast<void*>(
+          GetProcAddress(reinterpret_cast<HMODULE>(handle), name))) {
+    return sym;
+  }
+  // win32 api doc: "If the function fails, the return value is NULL."
+  // There is no null-returning non-error condition.
+  return IOErrorFromWinError(GetLastError(), "GetProcAddress(", name, ") failed.");
+#else
+  if (void* sym = dlsym(handle, name)) return sym;
+  // dlsym(3) man page: "On failure, they return NULL"
+  // There is no null-returning non-error condition.
+  auto* error = dlerror();
+  return Status::IOError("dlsym(", name, ") failed: ", error ? error : "unknown error");
+#endif
+}
+
+}  // namespace arrow::internal

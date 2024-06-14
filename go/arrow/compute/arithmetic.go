@@ -22,12 +22,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/apache/arrow/go/v13/arrow"
-	"github.com/apache/arrow/go/v13/arrow/compute/internal/exec"
-	"github.com/apache/arrow/go/v13/arrow/compute/internal/kernels"
-	"github.com/apache/arrow/go/v13/arrow/decimal128"
-	"github.com/apache/arrow/go/v13/arrow/decimal256"
-	"github.com/apache/arrow/go/v13/arrow/scalar"
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/arrow/compute/exec"
+	"github.com/apache/arrow/go/v17/arrow/compute/internal/kernels"
+	"github.com/apache/arrow/go/v17/arrow/decimal128"
+	"github.com/apache/arrow/go/v17/arrow/decimal256"
+	"github.com/apache/arrow/go/v17/arrow/scalar"
 )
 
 type (
@@ -627,6 +627,8 @@ func RegisterScalarArithmetic(reg FunctionRegistry) {
 	}{
 		{"sub_unchecked", kernels.OpSub, decPromoteAdd, subUncheckedDoc},
 		{"sub", kernels.OpSubChecked, decPromoteAdd, subDoc},
+		{"subtract_unchecked", kernels.OpSub, decPromoteAdd, subUncheckedDoc},
+		{"subtract", kernels.OpSubChecked, decPromoteAdd, subDoc},
 	}
 
 	for _, o := range ops {
@@ -676,8 +678,8 @@ func RegisterScalarArithmetic(reg FunctionRegistry) {
 				// the allocated space is for duration (an int64) but we
 				// wrote the time32 - time32 as if the output was time32
 				// so a quick copy in reverse expands the int32s to int64.
-				rawData := exec.GetData[int32](out.Buffers[1].Buf)
-				outData := exec.GetData[int64](out.Buffers[1].Buf)
+				rawData := arrow.GetData[int32](out.Buffers[1].Buf)
+				outData := arrow.GetData[int64](out.Buffers[1].Buf)
 
 				for i := out.Len - 1; i >= 0; i-- {
 					outData[i] = int64(rawData[i])
@@ -1088,8 +1090,8 @@ func Negate(ctx context.Context, opts ArithmeticOptions, input Datum) (Datum, er
 // input. For x in the input:
 //
 //		if x > 0: 1
-//	 if x < 0: -1
-//	 if x == 0: 0
+//		if x < 0: -1
+//	    if x == 0: 0
 func Sign(ctx context.Context, input Datum) (Datum, error) {
 	return CallFunction(ctx, "sign", nil, input)
 }

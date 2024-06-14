@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.c;
 
 import static org.apache.arrow.vector.testing.ValueVectorDataPopulator.setVector;
@@ -33,8 +32,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
-
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -48,6 +47,7 @@ import org.apache.arrow.vector.DurationVector;
 import org.apache.arrow.vector.ExtensionTypeVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
+import org.apache.arrow.vector.Float2Vector;
 import org.apache.arrow.vector.Float4Vector;
 import org.apache.arrow.vector.Float8Vector;
 import org.apache.arrow.vector.IntVector;
@@ -134,7 +134,8 @@ public class RoundtripTest {
       }
 
       // Consumer imports vector
-      FieldVector imported = Data.importVector(childAllocator, consumerArrowArray, consumerArrowSchema, null);
+      FieldVector imported =
+          Data.importVector(childAllocator, consumerArrowArray, consumerArrowSchema, null);
       if (!(imported instanceof NullVector)) {
         assertEquals(childAllocator, imported.getAllocator());
       }
@@ -164,10 +165,30 @@ public class RoundtripTest {
   }
 
   boolean roundtrip(FieldVector vector, Class<?> clazz) {
+    List<ArrowBuf> fieldBuffers = vector.getFieldBuffers();
+    List<Integer> orgRefCnts =
+        fieldBuffers.stream().map(buf -> buf.refCnt()).collect(Collectors.toList());
+    long orgMemorySize = allocator.getAllocatedMemory();
+
+    boolean result = false;
     try (ValueVector imported = vectorRoundtrip(vector)) {
-      assertTrue(clazz.isInstance(imported), String.format("expected %s but was %s", clazz, imported.getClass()));
-      return VectorEqualsVisitor.vectorEquals(vector, imported);
+      assertTrue(
+          clazz.isInstance(imported),
+          String.format("expected %s but was %s", clazz, imported.getClass()));
+      result = VectorEqualsVisitor.vectorEquals(vector, imported);
     }
+
+    // Check that the ref counts of the buffers are the same after the roundtrip
+    IntStream.range(0, orgRefCnts.size())
+        .forEach(
+            i -> {
+              ArrowBuf buf = fieldBuffers.get(i);
+              assertEquals(buf.refCnt(), orgRefCnts.get(i));
+            });
+
+    assertEquals(orgMemorySize, allocator.getAllocatedMemory());
+
+    return result;
   }
 
   @Test
@@ -292,8 +313,16 @@ public class RoundtripTest {
   @Test
   public void testFixedSizeBinaryVector() {
     try (final FixedSizeBinaryVector vector = new FixedSizeBinaryVector("v", allocator, 2)) {
-      setVector(vector, new byte[] { 0b0000, 0b0001 }, new byte[] { 0b0010, 0b0011 });
+      setVector(vector, new byte[] {0b0000, 0b0001}, new byte[] {0b0010, 0b0011});
       assertTrue(roundtrip(vector, FixedSizeBinaryVector.class));
+    }
+  }
+
+  @Test
+  public void testFloat2Vector() {
+    try (final Float2Vector vector = new Float2Vector("v", allocator)) {
+      setVector(vector, 0.1f, 0.2f, 0.3f, null);
+      assertTrue(roundtrip(vector, Float2Vector.class));
     }
   }
 
@@ -477,9 +506,20 @@ public class RoundtripTest {
   }
 
   @Test
+  public void testNullVector() {
+    try (final NullVector vector = new NullVector("v", 1024)) {
+      assertTrue(roundtrip(vector, NullVector.class));
+    }
+  }
+
+  @Test
   public void testVarBinaryVector() {
     try (final VarBinaryVector vector = new VarBinaryVector("v", allocator)) {
-      setVector(vector, "abc".getBytes(), "def".getBytes(), null);
+      setVector(
+          vector,
+          "abc".getBytes(StandardCharsets.UTF_8),
+          "def".getBytes(StandardCharsets.UTF_8),
+          null);
       assertTrue(roundtrip(vector, VarBinaryVector.class));
     }
   }
@@ -505,7 +545,7 @@ public class RoundtripTest {
 
       String str = "hello world";
       try (ArrowBuf buf = allocator.buffer(16)) {
-        buf.setBytes(0, str.getBytes());
+        buf.setBytes(0, str.getBytes(StandardCharsets.UTF_8));
         binHolder.start = 0;
         binHolder.end = str.length();
         binHolder.buffer = buf;
@@ -528,8 +568,19 @@ public class RoundtripTest {
   @Test
   public void testListVector() {
     try (final ListVector vector = ListVector.empty("v", allocator)) {
-      setVector(vector, Arrays.stream(new int[] { 1, 2 }).boxed().collect(Collectors.toList()),
-          Arrays.stream(new int[] { 3, 4 }).boxed().collect(Collectors.toList()), new ArrayList<Integer>());
+      setVector(
+          vector,
+          Arrays.stream(new int[] {1, 2}).boxed().collect(Collectors.toList()),
+          Arrays.stream(new int[] {3, 4}).boxed().collect(Collectors.toList()),
+          new ArrayList<Integer>());
+      assertTrue(roundtrip(vector, ListVector.class));
+    }
+  }
+
+  @Test
+  public void testEmptyListVector() {
+    try (final ListVector vector = ListVector.empty("v", allocator)) {
+      setVector(vector, new ArrayList<Integer>());
       assertTrue(roundtrip(vector, ListVector.class));
     }
   }
@@ -537,8 +588,11 @@ public class RoundtripTest {
   @Test
   public void testLargeListVector() {
     try (final LargeListVector vector = LargeListVector.empty("v", allocator)) {
-      setVector(vector, Arrays.stream(new int[] { 1, 2 }).boxed().collect(Collectors.toList()),
-          Arrays.stream(new int[] { 3, 4 }).boxed().collect(Collectors.toList()), new ArrayList<Integer>());
+      setVector(
+          vector,
+          Arrays.stream(new int[] {1, 2}).boxed().collect(Collectors.toList()),
+          Arrays.stream(new int[] {3, 4}).boxed().collect(Collectors.toList()),
+          new ArrayList<Integer>());
       assertTrue(roundtrip(vector, LargeListVector.class));
     }
   }
@@ -546,8 +600,10 @@ public class RoundtripTest {
   @Test
   public void testFixedSizeListVector() {
     try (final FixedSizeListVector vector = FixedSizeListVector.empty("v", 2, allocator)) {
-      setVector(vector, Arrays.stream(new int[] { 1, 2 }).boxed().collect(Collectors.toList()),
-          Arrays.stream(new int[] { 3, 4 }).boxed().collect(Collectors.toList()));
+      setVector(
+          vector,
+          Arrays.stream(new int[] {1, 2}).boxed().collect(Collectors.toList()),
+          Arrays.stream(new int[] {3, 4}).boxed().collect(Collectors.toList()));
       assertTrue(roundtrip(vector, FixedSizeListVector.class));
     }
   }
@@ -598,8 +654,8 @@ public class RoundtripTest {
   public void testStructVector() {
     try (final StructVector vector = StructVector.empty("v", allocator)) {
       Map<String, List<Integer>> data = new HashMap<>();
-      data.put("col_1", Arrays.stream(new int[] { 1, 2 }).boxed().collect(Collectors.toList()));
-      data.put("col_2", Arrays.stream(new int[] { 3, 4 }).boxed().collect(Collectors.toList()));
+      data.put("col_1", Arrays.stream(new int[] {1, 2}).boxed().collect(Collectors.toList()));
+      data.put("col_2", Arrays.stream(new int[] {3, 4}).boxed().collect(Collectors.toList()));
       setVector(vector, data);
       assertTrue(roundtrip(vector, StructVector.class));
     }
@@ -608,7 +664,8 @@ public class RoundtripTest {
   @Test
   public void testExtensionTypeVector() {
     ExtensionTypeRegistry.register(new UuidType());
-    final Schema schema = new Schema(Collections.singletonList(Field.nullable("a", new UuidType())));
+    final Schema schema =
+        new Schema(Collections.singletonList(Field.nullable("a", new UuidType())));
     try (final VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
       // Fill with data
       UUID u1 = UUID.randomUUID();
@@ -627,8 +684,12 @@ public class RoundtripTest {
 
       final Field field = importedRoot.getSchema().getFields().get(0);
       final UuidType expectedType = new UuidType();
-      assertEquals(field.getMetadata().get(ExtensionType.EXTENSION_METADATA_KEY_NAME), expectedType.extensionName());
-      assertEquals(field.getMetadata().get(ExtensionType.EXTENSION_METADATA_KEY_METADATA), expectedType.serialize());
+      assertEquals(
+          field.getMetadata().get(ExtensionType.EXTENSION_METADATA_KEY_NAME),
+          expectedType.extensionName());
+      assertEquals(
+          field.getMetadata().get(ExtensionType.EXTENSION_METADATA_KEY_METADATA),
+          expectedType.serialize());
 
       final UuidVector deserialized = (UuidVector) importedRoot.getFieldVectors().get(0);
       assertEquals(vector.getValueCount(), deserialized.getValueCount());
@@ -659,7 +720,8 @@ public class RoundtripTest {
         }
       }
       // Consumer imports vector
-      imported = Data.importVectorSchemaRoot(allocator, consumerArrowArray, consumerArrowSchema, null);
+      imported =
+          Data.importVectorSchemaRoot(allocator, consumerArrowArray, consumerArrowSchema, null);
     }
 
     // Ensure that imported VectorSchemaRoot is valid even after C Data Interface
@@ -671,7 +733,8 @@ public class RoundtripTest {
   }
 
   /**
-   * Tests exporting Table and importing back to VSR. Importing back to Table is not supported at present.
+   * Tests exporting Table and importing back to VSR. Importing back to Table is not supported at
+   * present.
    */
   @Test
   public void testTable() {
@@ -680,8 +743,7 @@ public class RoundtripTest {
     // Consumer allocates empty structures
     try (ArrowSchema consumerArrowSchema = ArrowSchema.allocateNew(allocator);
         ArrowArray consumerArrowArray = ArrowArray.allocateNew(allocator)) {
-      try (
-          VectorSchemaRoot vsr = createTestVSR();
+      try (VectorSchemaRoot vsr = createTestVSR();
           Table table = new Table(vsr)) {
         // Producer creates structures from existing memory pointers
         try (ArrowSchema arrowSchema = ArrowSchema.wrap(consumerArrowSchema.memoryAddress());
@@ -691,7 +753,8 @@ public class RoundtripTest {
         }
       }
       // Consumer imports vector
-      imported = Data.importVectorSchemaRoot(allocator, consumerArrowArray, consumerArrowSchema, null);
+      imported =
+          Data.importVectorSchemaRoot(allocator, consumerArrowArray, consumerArrowSchema, null);
     }
 
     // Ensure that imported VectorSchemaRoot is valid even after C Data Interface
@@ -713,10 +776,11 @@ public class RoundtripTest {
       try (VectorSchemaRoot testVSR1 = createTestVSR();
           VectorSchemaRoot testVSR2 = createTestVSR()) {
         // Merge two VSRs to produce duplicated field names
-        final VectorSchemaRoot vsr = new VectorSchemaRoot(
-            Stream.concat(
-                testVSR1.getFieldVectors().stream(),
-                testVSR2.getFieldVectors().stream()).collect(Collectors.toList()));
+        final VectorSchemaRoot vsr =
+            new VectorSchemaRoot(
+                Stream.concat(
+                        testVSR1.getFieldVectors().stream(), testVSR2.getFieldVectors().stream())
+                    .collect(Collectors.toList()));
         // Producer creates structures from existing memory pointers
         try (ArrowSchema arrowSchema = ArrowSchema.wrap(consumerArrowSchema.memoryAddress());
             ArrowArray arrowArray = ArrowArray.wrap(consumerArrowArray.memoryAddress())) {
@@ -725,17 +789,19 @@ public class RoundtripTest {
         }
       }
       // Consumer imports vector
-      imported = Data.importVectorSchemaRoot(allocator, consumerArrowArray, consumerArrowSchema, null);
+      imported =
+          Data.importVectorSchemaRoot(allocator, consumerArrowArray, consumerArrowSchema, null);
     }
 
     // Ensure that imported VectorSchemaRoot is valid even after C Data Interface
     // structures are closed
     try (VectorSchemaRoot testVSR1 = createTestVSR();
         VectorSchemaRoot testVSR2 = createTestVSR()) {
-      final VectorSchemaRoot original = new VectorSchemaRoot(
-          Stream.concat(
-              testVSR1.getFieldVectors().stream(),
-              testVSR2.getFieldVectors().stream()).collect(Collectors.toList()));
+      final VectorSchemaRoot original =
+          new VectorSchemaRoot(
+              Stream.concat(
+                      testVSR1.getFieldVectors().stream(), testVSR2.getFieldVectors().stream())
+                  .collect(Collectors.toList()));
       assertTrue(imported.equals(original));
     }
     imported.close();
@@ -743,10 +809,14 @@ public class RoundtripTest {
 
   @Test
   public void testSchema() {
-    Field decimalField = new Field("inner1", FieldType.nullable(new ArrowType.Decimal(19, 4, 128)), null);
+    Field decimalField =
+        new Field("inner1", FieldType.nullable(new ArrowType.Decimal(19, 4, 128)), null);
     Field strField = new Field("inner2", FieldType.nullable(new ArrowType.Utf8()), null);
-    Field itemField = new Field("col1", FieldType.nullable(new ArrowType.Struct()),
-        Arrays.asList(decimalField, strField));
+    Field itemField =
+        new Field(
+            "col1",
+            FieldType.nullable(new ArrowType.Struct()),
+            Arrays.asList(decimalField, strField));
     Field intField = new Field("col2", FieldType.nullable(new ArrowType.Int(32, true)), null);
     Schema schema = new Schema(Arrays.asList(itemField, intField));
     // Consumer allocates empty ArrowSchema
@@ -795,9 +865,12 @@ public class RoundtripTest {
       consumerArrowArray.markReleased();
 
       // Consumer tried to imports vector but fails
-      Exception e = assertThrows(IllegalStateException.class, () -> {
-        Data.importVector(allocator, consumerArrowArray, consumerArrowSchema, null);
-      });
+      Exception e =
+          assertThrows(
+              IllegalStateException.class,
+              () -> {
+                Data.importVector(allocator, consumerArrowArray, consumerArrowSchema, null);
+              });
 
       assertEquals("Cannot import released ArrowArray", e.getMessage());
     }
@@ -846,7 +919,8 @@ public class RoundtripTest {
     @Override
     public ArrowType deserialize(ArrowType storageType, String serializedData) {
       if (!storageType.equals(storageType())) {
-        throw new UnsupportedOperationException("Cannot construct UuidType from underlying type " + storageType);
+        throw new UnsupportedOperationException(
+            "Cannot construct UuidType from underlying type " + storageType);
       }
       return new UuidType();
     }
@@ -864,7 +938,8 @@ public class RoundtripTest {
 
   static class UuidVector extends ExtensionTypeVector<FixedSizeBinaryVector> {
 
-    public UuidVector(String name, BufferAllocator allocator, FixedSizeBinaryVector underlyingVector) {
+    public UuidVector(
+        String name, BufferAllocator allocator, FixedSizeBinaryVector underlyingVector) {
       super(name, allocator, underlyingVector);
     }
 

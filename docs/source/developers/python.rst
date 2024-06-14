@@ -302,10 +302,24 @@ created above (stored in ``$ARROW_HOME``):
 
 .. code-block::
 
-   $ mkdir arrow/cpp/build
-   $ pushd arrow/cpp/build
-   $ cmake -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
-           -DCMAKE_INSTALL_LIBDIR=lib \
+   $ cmake -S arrow/cpp -B arrow/cpp/build \
+           -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
+           --preset ninja-release-python
+   $ cmake --build arrow/cpp/build --target install
+
+``ninja-release-python`` is not the only preset available - if you would like a
+build with more features like CUDA, Flight and Gandiva support you may opt for
+the ``ninja-release-python-maximal`` preset. If you wanted less features, (i.e.
+removing ORC and dataset support) you could opt for
+``ninja-release-python-minimal``. Changing the word ``release`` to ``debug``
+with any of the aforementioned presets will generate a debug build of Arrow.
+
+The presets are provided as a convenience, but you may instead opt to
+specify the individual components:
+
+.. code-block::
+   $ cmake -S arrow/cpp -B arrow/cpp/build \
+           -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
            -DCMAKE_BUILD_TYPE=Debug \
            -DARROW_BUILD_TESTS=ON \
            -DARROW_COMPUTE=ON \
@@ -321,11 +335,8 @@ created above (stored in ``$ARROW_HOME``):
            -DARROW_WITH_SNAPPY=ON \
            -DARROW_WITH_ZLIB=ON \
            -DARROW_WITH_ZSTD=ON \
-           -DPARQUET_REQUIRE_ENCRYPTION=ON \
-           ..
-   $ make -j4
-   $ make install
-   $ popd
+           -DPARQUET_REQUIRE_ENCRYPTION=ON
+   $ cmake --build arrow/cpp/build --target install -j4
 
 There are a number of optional components that can be switched ON by
 adding flags with ``ON``:
@@ -374,12 +385,6 @@ Python executable which you are using.
    :ref:`here <cpp-build-dependency-management>`)
    to explicitly tell CMake not to use conda.
 
-.. note::
-
-   With older versions of CMake (<3.15) you might need to pass ``-DPYTHON_EXECUTABLE``
-   instead of ``-DPython3_EXECUTABLE``. See `cmake documentation <https://cmake.org/cmake/help/latest/module/FindPython3.html#artifacts-specification>`_
-   for more details.
-
 For any other C++ build challenges, see :ref:`cpp-development`.
 
 In case you may need to rebuild the C++ part due to errors in the process it is
@@ -392,24 +397,26 @@ Now, build pyarrow:
 .. code-block::
 
    $ pushd arrow/python
-   $ export PYARROW_WITH_PARQUET=1
-   $ export PYARROW_WITH_DATASET=1
    $ export PYARROW_PARALLEL=4
    $ python setup.py build_ext --inplace
    $ popd
 
-If you did build one of the optional components (in C++), you need to set the
-corresponding ``PYARROW_WITH_$COMPONENT`` environment variable to 1.
-
-Similarly, if you built with ``PARQUET_REQUIRE_ENCRYPTION`` (in C++), you
-need to set the corresponding ``PYARROW_WITH_PARQUET_ENCRYPTION`` environment
-variable to 1.
+If you did build one of the optional components in C++, the equivalent components
+will be enabled by default for building pyarrow. This default can be overridden
+by setting the corresponding ``PYARROW_WITH_$COMPONENT`` environment variable
+to 0 or 1, see :ref:`python-dev-env-variables` below.
 
 To set the number of threads used to compile PyArrow's C++/Cython components,
 set the ``PYARROW_PARALLEL`` environment variable.
 
 If you wish to delete stale PyArrow build artifacts before rebuilding, navigate
 to the ``arrow/python`` folder and run ``git clean -Xfd .``.
+
+By default, PyArrow will be built in release mode even if Arrow C++ has been
+built in debug mode. To create a debug build of PyArrow, run
+``export PYARROW_BUILD_TYPE=debug`` prior to running  ``python setup.py
+build_ext --inplace`` above. A ``relwithdebinfo`` build can be created
+similarly.
 
 Now you are ready to install test dependencies and run `Unit Testing`_, as
 described above.
@@ -440,6 +447,9 @@ Debugging
 
 Since pyarrow depends on the Arrow C++ libraries, debugging can
 frequently involve crossing between Python and C++ shared libraries.
+For the best experience, make sure you've built both Arrow C++
+(``-DCMAKE_BUILD_TYPE=Debug``) and PyArrow (``export PYARROW_BUILD_TYPE=debug``)
+in debug mode.
 
 Using gdb on Linux
 ~~~~~~~~~~~~~~~~~~
@@ -537,7 +547,6 @@ Now, we can build pyarrow:
 .. code-block::
 
    $ pushd arrow\python
-   $ set PYARROW_WITH_PARQUET=1
    $ set CONDA_DLL_SEARCH_MODIFICATION_ENABLE=1
    $ python setup.py build_ext --inplace
    $ popd
@@ -587,46 +596,12 @@ Then run the unit tests with:
 Caveats
 -------
 
+.. _python-dev-env-variables:
+
 Relevant components and environment variables
 =============================================
 
-List of relevant Arrow CMake flags and corresponding environment variables
-to be used when building PyArrow are:
-
-.. list-table::
-   :widths: 30 30
-   :header-rows: 1
-
-   * - Arrow flags/options
-     - Corresponding environment variables for PyArrow
-   * - ``CMAKE_BUILD_TYPE``
-     - ``PYARROW_BUILD_TYPE`` (release, debug or relwithdebinfo)
-   * - ``ARROW_GCS``
-     - ``PYARROW_WITH_GCS``
-   * - ``ARROW_S3``
-     - ``PYARROW_WITH_S3``
-   * - ``ARROW_HDFS``
-     - ``PYARROW_WITH_HDFS``
-   * - ``ARROW_CUDA``
-     - ``PYARROW_WITH_CUDA``
-   * - ``ARROW_SUBSTRAIT``
-     - ``PYARROW_WITH_SUBSTRAIT``
-   * - ``ARROW_FLIGHT``
-     - ``PYARROW_WITH_FLIGHT``
-   * - ``ARROW_DATASET``
-     - ``PYARROW_WITH_DATASET``
-   * - ``ARROW_PARQUET``
-     - ``PYARROW_WITH_PARQUET``
-   * - ``PARQUET_REQUIRE_ENCRYPTION``
-     - ``PYARROW_WITH_PARQUET_ENCRYPTION``
-   * - ``ARROW_TENSORFLOW``
-     - ``PYARROW_WITH_TENSORFLOW``
-   * - ``ARROW_ORC``
-     - ``PYARROW_WITH_ORC``
-   * - ``ARROW_GANDIVA``
-     - ``PYARROW_WITH_GANDIVA``
-
-List of relevant environment variables that can also be used to build
+List of relevant environment variables that can be used to build
 PyArrow are:
 
 .. list-table::
@@ -636,6 +611,9 @@ PyArrow are:
    * - PyArrow environment variable
      - Description
      - Default value
+   * - ``PYARROW_BUILD_TYPE``
+     - Build type for PyArrow (release, debug or relwithdebinfo), sets ``CMAKE_BUILD_TYPE``
+     - ``release``
    * - ``PYARROW_CMAKE_GENERATOR``
      - Example: ``'Visual Studio 15 2017 Win64'``
      - ``''``
@@ -663,6 +641,45 @@ PyArrow are:
    * - ``PYARROW_PARALLEL``
      - Number of processes used to compile PyArrow’s C++/Cython components
      - ``''``
+
+The components being disabled or enabled when building PyArrrow is by default
+based on how Arrow C++ is build (i.e. it follows the ``ARROW_$COMPONENT`` flags).
+However, the ``PYARROW_WITH_$COMPONENT`` environment variables can still be used
+to override this when building PyArrow (e.g. to disable components, or to enforce
+certain components to be built):
+
+.. list-table::
+   :widths: 30 30
+   :header-rows: 1
+
+   * - Arrow flags/options
+     - Corresponding environment variables for PyArrow
+   * - ``ARROW_GCS``
+     - ``PYARROW_WITH_GCS``
+   * - ``ARROW_S3``
+     - ``PYARROW_WITH_S3``
+   * - ``ARROW_AZURE``
+     - ``PYARROW_WITH_AZURE``
+   * - ``ARROW_HDFS``
+     - ``PYARROW_WITH_HDFS``
+   * - ``ARROW_CUDA``
+     - ``PYARROW_WITH_CUDA``
+   * - ``ARROW_SUBSTRAIT``
+     - ``PYARROW_WITH_SUBSTRAIT``
+   * - ``ARROW_FLIGHT``
+     - ``PYARROW_WITH_FLIGHT``
+   * - ``ARROW_ACERO``
+     - ``PYARROW_WITH_ACERO``
+   * - ``ARROW_DATASET``
+     - ``PYARROW_WITH_DATASET``
+   * - ``ARROW_PARQUET``
+     - ``PYARROW_WITH_PARQUET``
+   * - ``PARQUET_REQUIRE_ENCRYPTION``
+     - ``PYARROW_WITH_PARQUET_ENCRYPTION``
+   * - ``ARROW_ORC``
+     - ``PYARROW_WITH_ORC``
+   * - ``ARROW_GANDIVA``
+     - ``PYARROW_WITH_GANDIVA``
 
 Deleting stale build artifacts
 ==============================
@@ -722,6 +739,9 @@ Install the development version of PyArrow from `arrow-nightlies
 .. code-block:: bash
 
     conda install -c arrow-nightlies pyarrow
+
+Note that this requires to use the ``conda-forge`` channel for all other
+packages (``conda config --add channels conda-forge``).
 
 Install the development version from an `alternative PyPI
 <https://gemfury.com/arrow-nightlies>`_ index:

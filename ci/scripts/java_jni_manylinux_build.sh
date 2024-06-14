@@ -21,8 +21,14 @@ set -ex
 
 arrow_dir=${1}
 build_dir=${2}
+normalized_arch=$(arch)
+case ${normalized_arch} in
+  aarch64)
+    normalized_arch=aarch_64
+    ;;
+esac
 # The directory where the final binaries will be stored when scripts finish
-dist_dir=${3}/$(arch)
+dist_dir=${3}
 
 echo "=== Clear output directories and leftovers ==="
 # Clear output directories and leftovers
@@ -52,7 +58,7 @@ export ARROW_ORC
 : ${VCPKG_ROOT:=/opt/vcpkg}
 : ${VCPKG_FEATURE_FLAGS:=-manifests}
 : ${VCPKG_TARGET_TRIPLET:=${VCPKG_DEFAULT_TRIPLET:-x64-linux-static-${CMAKE_BUILD_TYPE}}}
-: ${GANDIVA_CXX_FLAGS:=-isystem;${devtoolset_include_cpp};-isystem;${devtoolset_include_cpp}/x86_64-redhat-linux;-isystem;-lpthread}
+: ${GANDIVA_CXX_FLAGS:=-isystem;${devtoolset_include_cpp};-isystem;${devtoolset_include_cpp}/x86_64-redhat-linux;-lpthread}
 
 if [ "${ARROW_USE_CCACHE}" == "ON" ]; then
   echo "=== ccache statistics before build ==="
@@ -85,7 +91,6 @@ cmake \
   -DARROW_S3=${ARROW_S3} \
   -DARROW_USE_CCACHE=${ARROW_USE_CCACHE} \
   -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
-  -DCMAKE_INSTALL_LIBDIR=lib \
   -DCMAKE_INSTALL_PREFIX=${ARROW_HOME} \
   -DCMAKE_UNITY_BUILD=${CMAKE_UNITY_BUILD} \
   -DGTest_SOURCE=BUNDLED \
@@ -103,9 +108,18 @@ ninja install
 if [ "${ARROW_BUILD_TESTS}" = "ON" ]; then
   # MinIO is required
   exclude_tests="arrow-s3fs-test"
+  case $(arch) in
+    aarch64)
+      # GCS testbench is crashed on aarch64:
+      # ImportError: ../grpc/_cython/cygrpc.cpython-38-aarch64-linux-gnu.so:
+      # undefined symbol: vtable for std::__cxx11::basic_ostringstream<
+      #   char, std::char_traits<char>, std::allocator<char> >
+      exclude_tests="${exclude_tests}|arrow-gcsfs-test"
+      ;;
+  esac
   # unstable
-  exclude_tests="${exclude_tests}|arrow-compute-hash-join-node-test"
-  exclude_tests="${exclude_tests}|arrow-dataset-scanner-test"
+  exclude_tests="${exclude_tests}|arrow-acero-asof-join-node-test"
+  exclude_tests="${exclude_tests}|arrow-acero-hash-join-node-test"
   # strptime
   exclude_tests="${exclude_tests}|arrow-utility-test"
   ctest \
@@ -138,6 +152,7 @@ fi
 echo "=== Checking shared dependencies for libraries ==="
 pushd ${dist_dir}
 archery linking check-dependencies \
+  --allow ld-linux-aarch64 \
   --allow ld-linux-x86-64 \
   --allow libc \
   --allow libdl \
@@ -148,8 +163,8 @@ archery linking check-dependencies \
   --allow libstdc++ \
   --allow libz \
   --allow linux-vdso \
-  libarrow_cdata_jni.so \
-  libarrow_dataset_jni.so \
-  libarrow_orc_jni.so \
-  libgandiva_jni.so
+  arrow_cdata_jni/${normalized_arch}/libarrow_cdata_jni.so \
+  arrow_dataset_jni/${normalized_arch}/libarrow_dataset_jni.so \
+  arrow_orc_jni/${normalized_arch}/libarrow_orc_jni.so \
+  gandiva_jni/${normalized_arch}/libgandiva_jni.so
 popd
